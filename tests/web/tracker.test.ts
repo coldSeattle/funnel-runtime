@@ -174,6 +174,50 @@ describe('createTracker', () => {
     expect(JSON.parse(storage.value ?? 'null')).toEqual([]);
   });
 
+  it('keeps the backoff when the batch size is reached while waiting to retry', async () => {
+    const send = vi
+      .fn<(events: IncomingEvent[]) => Promise<boolean>>()
+      .mockResolvedValueOnce(false)
+      .mockResolvedValue(true);
+    const tracker = createTracker({ sessionId: 's1', allowed, send, batchSize: 3, ...fixtures() });
+
+    tracker.track('step_viewed', { properties: { step_type: 'info' } });
+    await vi.advanceTimersByTimeAsync(800);
+    expect(send).toHaveBeenCalledTimes(1); // failed: the next attempt is due 1 s later
+
+    await vi.advanceTimersByTimeAsync(200);
+    tracker.track('step_viewed', { properties: { step_type: 'info' } });
+    tracker.track('step_viewed', { properties: { step_type: 'info' } });
+    tracker.track('step_viewed', { properties: { step_type: 'info' } });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(send).toHaveBeenCalledTimes(1);
+
+    // The retry stays due at 800 + 1000 ms.
+    await vi.advanceTimersByTimeAsync(799);
+    expect(send).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(send).toHaveBeenCalledTimes(2);
+    expect(send.mock.calls[1]![0].map((event) => event.event_id)).toEqual(['evt-1', 'evt-2', 'evt-3']);
+  });
+
+  it('still sends a full batch at once when no retry is pending', async () => {
+    const send = vi
+      .fn<(events: IncomingEvent[]) => Promise<boolean>>()
+      .mockResolvedValueOnce(false)
+      .mockResolvedValue(true);
+    const tracker = createTracker({ sessionId: 's1', allowed, send, batchSize: 2, ...fixtures() });
+
+    tracker.track('step_viewed', { properties: { step_type: 'info' } });
+    await vi.advanceTimersByTimeAsync(800); // fails
+    await vi.advanceTimersByTimeAsync(1000); // retry succeeds, backoff is over
+    expect(send).toHaveBeenCalledTimes(2);
+
+    tracker.track('step_viewed', { properties: { step_type: 'info' } });
+    tracker.track('step_viewed', { properties: { step_type: 'info' } });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(send).toHaveBeenCalledTimes(3);
+  });
+
   it('caps the backoff at maxBackoffMs', async () => {
     const send = vi.fn(async (_events: IncomingEvent[]) => false);
     const tracker = createTracker({ sessionId: 's1', allowed, send, maxBackoffMs: 2000, ...fixtures() });

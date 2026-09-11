@@ -151,7 +151,9 @@ export function createTracker(options: TrackerOptions): Tracker {
         properties,
       });
       persist();
-      if (queue.length >= batchSize) {
+      // A full batch only skips the normal batch delay. While a failed send is backing off, the
+      // pending retry timer stays in charge, otherwise a busy page would hammer a failing server.
+      if (queue.length >= batchSize && failures === 0) {
         clearTimer();
         void flush();
       } else {
