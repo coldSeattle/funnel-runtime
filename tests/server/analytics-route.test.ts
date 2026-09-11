@@ -135,7 +135,7 @@ describe('GET /api/analytics', () => {
     });
   });
 
-  it('orders steps across all versions: v1 sequence, then steps new in v3, then unknown ones', async () => {
+  it('orders steps across all versions: v1 sequence, then steps new in v3, then unknown ones, result last', async () => {
     const body = await get();
     expect(body.steps.map((s) => s.stepId)).toEqual([
       'intro',
@@ -146,12 +146,14 @@ describe('GET /api/analytics', () => {
       'office_days',
       'async_maturity',
       'tool_count',
-      'result',
       'security_constraints',
       'meeting_hours',
       'legacy_step',
+      'result',
     ]);
-    expect(body.steps.at(-1)).toMatchObject({ stepId: 'legacy_step', type: null, reached: 1 });
+    // v1 puts `result` before the steps v3 added; the dashboard still ends on the result row.
+    expect(body.steps.at(-1)).toMatchObject({ stepId: 'result', type: 'result', reached: 3 });
+    expect(body.steps.find((s) => s.stepId === 'legacy_step')).toMatchObject({ type: null, reached: 1 });
   });
 
   it('lists the filter options from stored versions and sessions', async () => {
@@ -202,8 +204,8 @@ describe('GET /api/analytics', () => {
       'meeting_hours',
       'async_maturity',
       'tool_count',
-      'result',
       'legacy_step',
+      'result',
     ]);
   });
 

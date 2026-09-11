@@ -28,9 +28,18 @@ export function createAnalyticsService(
           campaigns: sessions.campaigns(),
         },
         ...result,
+        steps: resultLast(result.steps),
       };
     },
   };
+}
+
+/**
+ * Stable: result rows move to the end. Across versions v1's `result` would otherwise sit before
+ * the steps v3 added, and steps known only from events are appended after the configured order.
+ */
+export function resultLast<T extends { type: string | null }>(rows: T[]): T[] {
+  return [...rows.filter((r) => r.type !== 'result'), ...rows.filter((r) => r.type === 'result')];
 }
 
 /**
