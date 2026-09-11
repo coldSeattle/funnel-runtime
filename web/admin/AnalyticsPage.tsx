@@ -324,9 +324,19 @@ function Dashboard({ data, view, onExcludeOverrides }: DashboardProps) {
                     <td>
                       <RateBar rate={row.reachRate} />
                     </td>
-                    <td className="num">{formatPercent(row.completionRate)}</td>
-                    <td className="num">{formatCount(row.exits)}</td>
-                    <td className="num">{formatPercent(row.exitRate)}</td>
+                    {row.type === 'result' ? (
+                      <>
+                        <NotApplicableCell />
+                        <NotApplicableCell />
+                        <NotApplicableCell />
+                      </>
+                    ) : (
+                      <>
+                        <td className="num">{formatPercent(row.completionRate)}</td>
+                        <td className="num">{formatCount(row.exits)}</td>
+                        <td className="num">{formatPercent(row.exitRate)}</td>
+                      </>
+                    )}
                   </tr>
                 ))
               )}
@@ -334,7 +344,8 @@ function Dashboard({ data, view, onExcludeOverrides }: DashboardProps) {
           </table>
         </div>
         <p className="table-note">
-          Reach % = reached ÷ started. Completed % and exit % are relative to reached. An exit is the last step a session
+          Reach % = reached ÷ started. Completed % and exit % are relative to reached and do not apply to the result
+          step. An exit is the last step a session
           viewed without reaching the result; {formatCount(exitsBeforeFirstStep)} sessions left before any step rendered.
         </p>
       </section>
@@ -353,6 +364,18 @@ function Dashboard({ data, view, onExcludeOverrides }: DashboardProps) {
         <CompareTable id="by-version" title="By version" rows={versionRows} />
       </div>
     </div>
+  );
+}
+
+const RESULT_NOT_APPLICABLE = 'Not applicable to the result step';
+
+/** Nobody completes or exits the result step, so 0.0% there would read as a broken metric. */
+function NotApplicableCell() {
+  return (
+    <td className="num muted" title={RESULT_NOT_APPLICABLE}>
+      <span aria-hidden="true">—</span>
+      <span className="sr-only">{RESULT_NOT_APPLICABLE}</span>
+    </td>
   );
 }
 
