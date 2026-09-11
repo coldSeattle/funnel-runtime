@@ -1,9 +1,7 @@
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { buildApp } from './app';
-import { ensureSeed } from './seed';
-import { generateTraffic } from '../scripts/traffic/generator';
-import { injectTransport } from '../scripts/traffic/transport';
+import { ensureSeed, runBootDemo } from './seed';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const port = Number(process.env.PORT ?? 3000);
@@ -27,16 +25,8 @@ try {
   process.exit(1);
 }
 
-// Demo traffic runs after listen so the host's health check passes while it seeds;
-// ensureSeed only runs it on a database without sessions.
+// The demo runs after listen so the host's health check passes while it seeds. Only a database
+// without sessions gets it (v1 traffic, then the iteration-2 scenario ending on v1); it never throws.
 if (process.env.SEED_ON_BOOT === '1') {
-  void ensureSeed(app, {
-    configsDir,
-    runTraffic: (a) =>
-      generateTraffic({ transport: injectTransport(a), sessions: 120, seed: 42, log: (line) => a.log.info(line) }).then(
-        (summary) => {
-          if (!summary.ok) a.log.warn('seed traffic: analytics do not match the simulation');
-        },
-      ),
-  }).catch((err: unknown) => app.log.error(err));
+  void runBootDemo(app, { configsDir }).catch((err: unknown) => app.log.error(err));
 }
