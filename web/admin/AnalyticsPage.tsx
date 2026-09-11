@@ -1,10 +1,18 @@
 // Funnel dashboard over GET /api/analytics (design §8). Every figure is a count of unique sessions.
 // Filters live in the URL so a slice can be shared as a link.
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { useSearchParams } from 'react-router';
 import type { AnalyticsFilters, AnalyticsResponse, StepRow, Totals } from '../../shared/api';
 import { ApiRequestError, getAnalytics, toApiError } from '../api';
 import { AdminLayout, TokenPrompt } from './AdminLayout';
+import {
+  compareProportions,
+  MIN_SUCCESSES,
+  MIN_TRIALS,
+  VERDICT_LABEL,
+  type ProportionComparison,
+  type Verdict,
+} from './stats';
 
 export function formatPercent(rate: number | null | undefined): string {
   if (rate === null || rate === undefined || !Number.isFinite(rate)) return '—';
@@ -13,6 +21,22 @@ export function formatPercent(rate: number | null | undefined): string {
 
 function formatCount(value: number): string {
   return value.toLocaleString('en-US');
+}
+
+/** Signed with a real minus sign; a value that rounds to zero prints unsigned. */
+function formatSigned(value: number, unit: string): string {
+  const rounded = Math.abs(value).toFixed(1);
+  if (Number(rounded) === 0) return `0.0${unit}`;
+  return `${value > 0 ? '+' : '−'}${rounded}${unit}`;
+}
+
+/** A difference of two rates, in percentage points. */
+function formatPoints(difference: number | null): string {
+  return difference === null ? '—' : formatSigned(difference * 100, ' pp');
+}
+
+function formatLift(lift: number | null): string {
+  return lift === null ? '—' : formatSigned(lift * 100, '%');
 }
 
 function ratio(part: number, whole: number): number | null {
@@ -36,12 +60,16 @@ function withSelected(options: string[], selected: string | undefined): string[]
   return selected && !options.includes(selected) ? [...options, selected] : options;
 }
 
+/** What the numbers on screen are: current, being replaced, or left over from a failed request. */
+type DashboardView = 'fresh' | 'refreshing' | 'stale';
+
 export function AnalyticsPage() {
   const [params, setParams] = useSearchParams();
   const paramsKey = params.toString();
   const filters = useMemo(() => readFilters(new URLSearchParams(paramsKey)), [paramsKey]);
 
-  const [data, setData] = useState<AnalyticsResponse | null>(null);
+  // The last successful response, with the URL selection it was fetched for.
+  const [loaded, setLoaded] = useState<{ data: AnalyticsResponse; key: string } | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<ApiRequestError | null>(null);
   const [needsToken, setNeedsToken] = useState(false);
@@ -49,11 +77,12 @@ export function AnalyticsPage() {
 
   useEffect(() => {
     let active = true;
+    const key = paramsKey;
     setLoading(true);
     getAnalytics(filters).then(
       (response) => {
         if (!active) return;
-        setData(response);
+        setLoaded({ data: response, key });
         setError(null);
         setNeedsToken(false);
         setLoading(false);
@@ -69,6 +98,7 @@ export function AnalyticsPage() {
     return () => {
       active = false;
     };
+    // paramsKey and filters change together; the key is captured for the response.
   }, [filters, reloadKey]);
 
   function setFilter(name: string, value: string | null): void {
@@ -84,10 +114,18 @@ export function AnalyticsPage() {
   }
 
   const refresh = () => setReloadKey((key) => key + 1);
+  const data = loaded?.data ?? null;
   const hasFilters = paramsKey !== '';
   const versionOptions = withSelected((data?.options.versions ?? []).map(String), filters.version?.toString());
   const variantOptions = withSelected(data?.options.variants ?? [], filters.variant);
   const campaignOptions = withSelected(data?.options.campaigns ?? [], filters.utmCampaign);
+
+  const failed = error !== null && !needsToken;
+  const view: DashboardView = failed ? 'stale' : loading ? 'refreshing' : 'fresh';
+  const staleNote =
+    loaded !== null && loaded.key !== paramsKey
+      ? 'Showing the previous selection — these numbers do not match the filters above.'
+      : 'Showing the last loaded numbers — they may be out of date.';
 
   return (
     <AdminLayout
@@ -165,17 +203,24 @@ export function AnalyticsPage() {
         ) : null}
       </form>
 
-      {error && !needsToken ? (
-        <div className="panel panel-row">
+      {failed ? (
+        <div className="panel panel-row" role="alert">
           <p className="notice notice-error">{error.message}</p>
-          <button type="button" className="btn" onClick={refresh}>
-            Try again
+          <button type="button" className="btn" disabled={loading} onClick={refresh}>
+            {loading ? 'Retrying…' : 'Retry'}
           </button>
         </div>
       ) : null}
 
       {data ? (
-        <Dashboard data={data} refreshing={loading} />
+        <>
+          {view === 'stale' ? <p className="stale-note">{staleNote}</p> : null}
+          <Dashboard
+            data={data}
+            view={view}
+            onExcludeOverrides={() => setFilter('excludeOverrides', '1')}
+          />
+        </>
       ) : !error ? (
         <div className="panel muted">Loading analytics…</div>
       ) : null}
@@ -183,7 +228,13 @@ export function AnalyticsPage() {
   );
 }
 
-function Dashboard({ data, refreshing }: { data: AnalyticsResponse; refreshing: boolean }) {
+interface DashboardProps {
+  data: AnalyticsResponse;
+  view: DashboardView;
+  onExcludeOverrides: () => void;
+}
+
+function Dashboard({ data, view, onExcludeOverrides }: DashboardProps) {
   const { totals, steps, exitsBeforeFirstStep } = data;
   const exitSum = steps.reduce((sum, row) => sum + row.exits, 0);
   const accounted = exitSum + exitsBeforeFirstStep + totals.reachedResult;
@@ -194,8 +245,9 @@ function Dashboard({ data, refreshing }: { data: AnalyticsResponse; refreshing: 
   );
 
   return (
-    // Refetches keep the previous numbers on screen, dimmed, instead of flashing a loader.
-    <div className={`dashboard${refreshing ? ' is-refreshing' : ''}`} aria-busy={refreshing}>
+    // Refetches keep the previous numbers on screen, dimmed, instead of flashing a loader; after a
+    // failed refetch they stay dimmed further, under the "previous selection" note.
+    <div className={`dashboard is-${view}`} aria-busy={view === 'refreshing'}>
       {totals.started === 0 ? <div className="panel muted">No sessions match these filters yet.</div> : null}
 
       <section className="kpis" aria-label="Totals">
@@ -283,13 +335,14 @@ function Dashboard({ data, refreshing }: { data: AnalyticsResponse; refreshing: 
       </section>
 
       <div className="compare-grid">
-        <CompareTable
-          id="by-variant"
-          title="By variant"
-          rows={data.byVariant}
-          label={(key) => `Variant ${key}`}
-          note="Raw rates without a significance test — treat small gaps on small samples as noise."
-        />
+        <CompareTable id="by-variant" title="By variant" rows={data.byVariant} label={(key) => `Variant ${key}`}>
+          <AbComparison
+            byVariant={data.byVariant}
+            overridesExcluded={data.filters.excludeOverrides === true}
+            pooledVersions={data.filters.version === undefined && data.options.versions.length > 1}
+            onExcludeOverrides={onExcludeOverrides}
+          />
+        </CompareTable>
         <CompareTable id="by-version" title="By version" rows={data.byVersion} label={(key) => `v${key}`} />
       </div>
     </div>
@@ -327,10 +380,10 @@ interface CompareTableProps {
   title: string;
   rows: Record<string, Totals>;
   label: (key: string) => string;
-  note?: string;
+  children?: ReactNode;
 }
 
-function CompareTable({ id, title, rows, label, note }: CompareTableProps) {
+function CompareTable({ id, title, rows, label, children }: CompareTableProps) {
   const entries = Object.entries(rows).sort(([a], [b]) => a.localeCompare(b, undefined, { numeric: true }));
   return (
     <section aria-labelledby={id}>
@@ -377,7 +430,166 @@ function CompareTable({ id, title, rows, label, note }: CompareTableProps) {
           </table>
         </div>
       )}
-      {note ? <p className="table-note">{note}</p> : null}
+      {children}
     </section>
+  );
+}
+
+interface AbMetricSpec {
+  id: string;
+  label: string;
+  formula: string;
+  primary: boolean;
+  comparison: ProportionComparison;
+}
+
+interface AbComparisonProps {
+  byVariant: Record<string, Totals>;
+  overridesExcluded: boolean;
+  pooledVersions: boolean;
+  onExcludeOverrides: () => void;
+}
+
+/** B vs A with a 95 % interval per metric (math in ./stats.ts), instead of eyeballing raw rates. */
+function AbComparison({ byVariant, overridesExcluded, pooledVersions, onExcludeOverrides }: AbComparisonProps) {
+  const a = byVariant.A;
+  const b = byVariant.B;
+  if (!a || !b) {
+    return <p className="table-note">The A/B significance check appears when both variant A and variant B are in the selection.</p>;
+  }
+
+  const metrics: AbMetricSpec[] = [
+    {
+      id: 'primary',
+      label: 'Primary conversion',
+      formula: 'CTA clicks ÷ started',
+      primary: true,
+      comparison: compareProportions({ successes: a.ctaClicked, trials: a.started }, { successes: b.ctaClicked, trials: b.started }),
+    },
+    {
+      id: 'ctr',
+      label: 'CTR',
+      formula: 'CTA clicks ÷ reached result',
+      primary: false,
+      comparison: compareProportions(
+        { successes: a.ctaClicked, trials: a.reachedResult },
+        { successes: b.ctaClicked, trials: b.reachedResult },
+      ),
+    },
+  ];
+
+  return (
+    <section className="ab" aria-labelledby="ab-title">
+      <div className="ab-header">
+        <h3 className="ab-title" id="ab-title">
+          B vs A
+        </h3>
+        <span className="muted small">Difference B − A, 95% confidence interval (Newcombe–Wilson)</span>
+      </div>
+      <p className="ab-explainer">
+        Decide on primary conversion; CTR is secondary.{' '}
+        {overridesExcluded ? (
+          'Override sessions are excluded, so both arms are randomly assigned.'
+        ) : (
+          <>
+            Override sessions are included —{' '}
+            <button type="button" className="inline-link" onClick={onExcludeOverrides}>
+              exclude them
+            </button>{' '}
+            for a clean read.
+          </>
+        )}
+      </p>
+      {pooledVersions ? (
+        <p className="ab-explainer muted">Arms are pooled across versions; pick one version to read a single experiment.</p>
+      ) : null}
+      <div className="ab-grid">
+        {metrics.map((metric) => (
+          <AbMetric key={metric.id} metric={metric} />
+        ))}
+      </div>
+    </section>
+  );
+}
+
+const VERDICT_ICON: Record<Verdict, string> = {
+  better: '▲',
+  worse: '▼',
+  no_difference: '=',
+  insufficient: '…',
+};
+
+function AbMetric({ metric }: { metric: AbMetricSpec }) {
+  const { comparison } = metric;
+  const { a, b, interval, verdict } = comparison;
+  return (
+    <article className="ab-metric" aria-label={`${metric.label}: ${VERDICT_LABEL[verdict]}`}>
+      <div className="ab-metric-head">
+        <span className="ab-metric-name">
+          {metric.label}
+          {metric.primary ? <span className="kpi-tag">Primary</span> : null}
+        </span>
+        <span className={`verdict verdict-${verdict}`}>
+          <span aria-hidden="true">{VERDICT_ICON[verdict]}</span> {VERDICT_LABEL[verdict]}
+        </span>
+      </div>
+      <p className="ab-formula">{metric.formula}</p>
+
+      <dl className="ab-arms">
+        <dt>A</dt>
+        <dd className="ab-rate">{formatPercent(a.rate)}</dd>
+        <dd className="muted">
+          {formatCount(a.successes)} / {formatCount(a.trials)}
+        </dd>
+        <dt>B</dt>
+        <dd className="ab-rate">{formatPercent(b.rate)}</dd>
+        <dd className="muted">
+          {formatCount(b.successes)} / {formatCount(b.trials)}
+        </dd>
+      </dl>
+
+      <div className="ab-diff-row">
+        <span className="ab-diff">{formatPoints(comparison.difference)}</span>
+        <span className="ab-ci">
+          95% CI {interval ? `${formatPoints(interval.lower)} to ${formatPoints(interval.upper)}` : '—'}
+        </span>
+      </div>
+      <IntervalPlot comparison={comparison} />
+      <p className="ab-lift">
+        Relative lift <strong>{formatLift(comparison.relativeLift)}</strong>
+      </p>
+      {verdict === 'insufficient' ? (
+        <p className="ab-reason">
+          A verdict needs at least {MIN_TRIALS} sessions in the denominator and {MIN_SUCCESSES} CTA clicks in each arm.
+        </p>
+      ) : null}
+    </article>
+  );
+}
+
+/**
+ * The interval against a zero line, on a symmetric axis in 5 pp steps. Decorative: every number
+ * it shows is printed above it.
+ */
+function IntervalPlot({ comparison }: { comparison: ProportionComparison }) {
+  const { interval, difference, verdict } = comparison;
+  if (interval === null || difference === null) return null;
+  const reach = Math.max(Math.abs(interval.lower), Math.abs(interval.upper), 0.05);
+  const extent = Math.ceil(reach / 0.05 - 1e-9) * 0.05;
+  const at = (value: number) => 50 + (value / extent) * 50;
+  return (
+    <div className={`ci ci-${verdict}`} aria-hidden="true">
+      <div className="ci-plot">
+        <div className="ci-axis" />
+        <div className="ci-zero" />
+        <div className="ci-range" style={{ left: `${at(interval.lower)}%`, width: `${at(interval.upper) - at(interval.lower)}%` }} />
+        <div className="ci-point" style={{ left: `${at(difference)}%` }} />
+      </div>
+      <div className="ci-scale">
+        <span>{formatPoints(-extent)}</span>
+        <span>0</span>
+        <span>{formatPoints(extent)}</span>
+      </div>
+    </div>
   );
 }

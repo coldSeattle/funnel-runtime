@@ -1485,3 +1485,254 @@ html:has(.admin) {
   grid-template-columns: minmax(0, 1fr);
   gap: 20px;
 }
+
+/* After a failed refetch: the old numbers stay readable but clearly not current. */
+.dashboard.is-stale {
+  opacity: 0.45;
+  filter: grayscale(0.6);
+}
+
+.stale-note {
+  padding: 10px 14px;
+  background: #fbefd9;
+  border-left: 3px solid #c98a1a;
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  color: #6f4a0c;
+  font-weight: 600;
+}
+
+/* ---------- admin: A/B significance ---------- */
+
+.ab {
+  margin-top: 14px;
+  padding: 18px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-sm);
+}
+
+.ab-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 4px 12px;
+}
+
+.ab-title {
+  font-family: var(--font-sans);
+  font-size: 1rem;
+  font-weight: 700;
+  letter-spacing: 0;
+}
+
+.ab-explainer {
+  margin-top: 6px;
+  color: var(--ink-soft);
+  font-size: var(--step-1);
+}
+
+.inline-link {
+  padding: 0;
+  background: none;
+  border: none;
+  color: var(--accent);
+  cursor: pointer;
+  font: inherit;
+  font-weight: 700;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.inline-link:hover {
+  color: var(--accent-hover);
+}
+
+.ab-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr));
+  gap: 12px;
+  margin-top: 14px;
+}
+
+.ab-metric {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+  padding: 16px;
+  background: var(--surface-sunk);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+}
+
+.ab-metric-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.ab-metric-name {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 700;
+}
+
+.ab-formula,
+.ab-reason {
+  color: var(--muted);
+  font-size: var(--step-1);
+}
+
+.ab-arms {
+  display: grid;
+  grid-template-columns: auto auto 1fr;
+  align-items: baseline;
+  gap: 2px 14px;
+  margin: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.ab-arms dt {
+  font-weight: 700;
+}
+
+.ab-arms dd {
+  margin: 0;
+}
+
+.ab-rate {
+  font-weight: 600;
+}
+
+.ab-diff-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 12px;
+}
+
+.ab-diff {
+  font-size: 1.5rem;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  font-variant-numeric: tabular-nums;
+}
+
+.ab-ci {
+  color: var(--ink-soft);
+  font-size: var(--step-1);
+  font-variant-numeric: tabular-nums;
+}
+
+.ab-lift {
+  color: var(--ink-soft);
+  font-size: var(--step-1);
+}
+
+.ab-lift strong {
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+
+/* The label always carries the meaning; colour and icon only reinforce it. */
+.verdict {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  font-size: var(--step-1);
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.verdict-better {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.verdict-worse {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+.verdict-no_difference {
+  background: #ece8df;
+  color: var(--ink-soft);
+}
+
+.verdict-insufficient {
+  border-style: dashed;
+  border-color: var(--line-strong);
+  color: var(--muted);
+}
+
+.ci-plot {
+  position: relative;
+  height: 20px;
+}
+
+.ci-axis {
+  position: absolute;
+  top: 9px;
+  right: 0;
+  left: 0;
+  height: 2px;
+  background: var(--line);
+}
+
+.ci-zero {
+  position: absolute;
+  top: 1px;
+  bottom: 1px;
+  left: 50%;
+  width: 2px;
+  margin-left: -1px;
+  background: var(--ink-soft);
+}
+
+.ci-range {
+  position: absolute;
+  top: 7px;
+  height: 6px;
+  border-radius: 3px;
+  background: var(--muted);
+}
+
+.ci-point {
+  position: absolute;
+  top: 5px;
+  width: 10px;
+  height: 10px;
+  margin-left: -5px;
+  border: 2px solid var(--surface-sunk);
+  border-radius: 50%;
+  background: var(--ink);
+}
+
+.ci-better .ci-range {
+  background: var(--accent);
+}
+
+.ci-worse .ci-range {
+  background: var(--danger);
+}
+
+.ci-insufficient .ci-range {
+  background: var(--line-strong);
+}
+
+.ci-scale {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 0.75rem;
+  font-variant-numeric: tabular-nums;
+}
