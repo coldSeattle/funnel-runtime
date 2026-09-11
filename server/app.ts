@@ -61,10 +61,14 @@ export function buildApp(opts: AppOptions = {}): FastifyInstance {
     }
     const e = err as { statusCode?: unknown; message?: unknown };
     const status = typeof e.statusCode === 'number' && e.statusCode >= 400 ? e.statusCode : 500;
-    if (status >= 500) app.log.error(err);
+    if (status >= 500) {
+      // Unexpected 5xx messages come from drivers and internals; log them, never echo them to the client.
+      app.log.error(err);
+      return reply.status(status).send({ error: { code: 'internal', message: 'Internal error' } });
+    }
     return reply.status(status).send({
       error: {
-        code: status === 400 ? 'bad_request' : status >= 500 ? 'internal' : 'error',
+        code: status === 400 ? 'bad_request' : 'error',
         message: typeof e.message === 'string' ? e.message : 'Unexpected error',
       },
     });
