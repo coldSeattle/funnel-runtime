@@ -14,8 +14,10 @@ export interface NumberStepProps {
 export function NumberStep({ step, value, onChange, onSubmit, disabled, invalid, errorId }: NumberStepProps) {
   const input = step.input;
   const inputId = `field-${step.id}`;
+  const hintId = `${inputId}-hint`;
   const range =
     input?.min !== undefined && input.max !== undefined ? `${input.min}–${input.max}${input.unit ? ` ${input.unit}` : ''}` : null;
+  const describedBy = [range ? hintId : null, invalid ? errorId : null].filter(Boolean).join(' ');
 
   return (
     <div className="step step-number">
@@ -32,8 +34,9 @@ export function NumberStep({ step, value, onChange, onSubmit, disabled, invalid,
           max={input?.max}
           step={input?.step}
           disabled={disabled}
+          aria-label={step.content.title}
           aria-invalid={invalid || undefined}
-          aria-describedby={invalid ? errorId : undefined}
+          aria-describedby={describedBy || undefined}
           onChange={(event) => onChange(event.target.value)}
           onKeyDown={(event) => {
             if (event.key === 'Enter') {
@@ -44,7 +47,11 @@ export function NumberStep({ step, value, onChange, onSubmit, disabled, invalid,
         />
         {input?.unit ? <span className="number-unit">{input.unit}</span> : null}
       </div>
-      {range ? <p className="field-hint">Allowed range: {range}</p> : null}
+      {range ? (
+        <p className="field-hint" id={hintId}>
+          Allowed range: {range}
+        </p>
+      ) : null}
     </div>
   );
 }

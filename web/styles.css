@@ -2,7 +2,6 @@
 
 :root {
   --bg: #f4f1ea;
-  --bg-deep: #ebe5d9;
   --surface: #fffdf8;
   --surface-sunk: #f8f5ee;
   --ink: #14201b;
@@ -44,9 +43,8 @@ body {
 }
 
 body {
+  /* Flat on purpose: the sticky progress and action bars fade into exactly this colour. */
   background: var(--bg);
-  background-image: radial-gradient(120% 60% at 50% 0%, #fbf9f4 0%, var(--bg) 46%, var(--bg-deep) 100%);
-  background-attachment: fixed;
   color: var(--ink);
   font-family: var(--font-sans);
   font-size: var(--step-3);
@@ -137,8 +135,8 @@ button {
   font-weight: 500;
 }
 
+/* Content-sized: the action bar is pushed to the bottom instead of the card stretching empty. */
 .card {
-  flex: 1;
   margin-bottom: 16px;
   padding: clamp(20px, 5vw, 30px);
   background: var(--surface);
@@ -155,7 +153,6 @@ button {
   justify-content: center;
   gap: 14px;
   margin-top: 12vh;
-  flex: 0;
   text-align: center;
 }
 
@@ -402,6 +399,8 @@ button {
 
 .number-field:focus-within {
   border-color: var(--accent);
+  outline: 3px solid var(--focus);
+  outline-offset: 2px;
 }
 
 .number-field.is-invalid {
@@ -439,6 +438,7 @@ button {
   bottom: 0;
   z-index: 5;
   display: flex;
+  margin-top: auto;
   flex-direction: column;
   gap: 10px;
   padding: 14px 0 calc(16px + env(safe-area-inset-bottom));
@@ -1243,8 +1243,9 @@ code,
 
 .kpi-label {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 8px;
+  gap: 4px 8px;
   color: var(--ink-soft);
   font-size: var(--step-1);
   font-weight: 600;
@@ -1369,14 +1370,8 @@ code,
   text-align: right;
 }
 
+/* Stacked on purpose: side by side, the rate bars squeeze and clip their value labels. */
 .compare-grid {
   display: grid;
   gap: 20px;
-  align-items: start;
-}
-
-@media (min-width: 960px) {
-  .compare-grid {
-    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-  }
 }

@@ -216,8 +216,8 @@ function Dashboard({ data, refreshing }: { data: AnalyticsResponse; refreshing: 
         </span>
         <span>
           <strong>{consistent ? 'Consistent.' : 'Mismatch.'}</strong> {formatCount(exitSum)} exits +{' '}
-          {formatCount(exitsBeforeFirstStep)} before first step + {formatCount(totals.reachedResult)} reached result ={' '}
-          {formatCount(accounted)} {consistent ? '=' : '≠'} {formatCount(totals.started)} started
+          {formatCount(exitsBeforeFirstStep)} before first step + {formatCount(totals.reachedResult)} reached result{' '}
+          {consistent ? '=' : `= ${formatCount(accounted)}, expected`} {formatCount(totals.started)} started
         </span>
       </p>
 

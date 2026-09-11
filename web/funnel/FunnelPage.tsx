@@ -1,6 +1,7 @@
 // The funnel screen. Nothing is hard-coded: steps, copy, validation and the event whitelist
 // all come from the session's config version, rendered through the shared engine.
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { Link } from 'react-router';
 import type { SessionDto } from '../../shared/api';
 import type { Answers, FunnelConfig, ResolvedFunnel, Step } from '../../shared/types';
 import {
@@ -47,6 +48,17 @@ export function FunnelPage() {
   if (status === 'loading') return <BootScreen />;
 
   if (status === 'error' || !session || !config) {
+    if (error?.code === 'no_active_version') {
+      return (
+        <BootError
+          title="This questionnaire isn't live yet"
+          message="No version of the funnel has been published. Please check back shortly."
+          onRetry={retry}
+          retryLabel="Check again"
+          showAdminLink
+        />
+      );
+    }
     return (
       <BootError
         title="We could not start the questionnaire"
@@ -88,11 +100,13 @@ function BootError({
   message,
   onRetry,
   retryLabel = 'Try again',
+  showAdminLink = false,
 }: {
   title: string;
   message: string;
   onRetry: () => void;
   retryLabel?: string;
+  showAdminLink?: boolean;
 }) {
   return (
     <div className="funnel">
@@ -103,6 +117,11 @@ function BootError({
           <button type="button" className="button button-primary" onClick={onRetry}>
             {retryLabel}
           </button>
+          {showAdminLink ? (
+            <Link className="link-button" to="/admin">
+              Operator? Publish a version in the admin
+            </Link>
+          ) : null}
         </div>
       </div>
     </div>
@@ -111,11 +130,16 @@ function BootError({
 
 type DraftValue = string | string[];
 
+interface StepFailure {
+  message: string;
+  action: 'submit' | 'back' | 'restart';
+}
+
 interface StepDraft {
   stepId: string;
   value: DraftValue;
   fieldError: string | null;
-  failure: { message: string; action: 'submit' | 'back' } | null;
+  failure: StepFailure | null;
 }
 
 interface FunnelRunnerProps {
@@ -197,7 +221,13 @@ function FunnelRunner({ session, config, resolved, onRestart }: FunnelRunnerProp
       setAnswers(nextAnswers);
       setStepId(next);
     } catch (error) {
-      setDraftState({ ...draft, stepId: step.id, fieldError: null, failure: { message: errorMessage(error), action: 'submit' } });
+      const rejection = answerRejection(error);
+      setDraftState({
+        ...draft,
+        stepId: step.id,
+        fieldError: rejection,
+        failure: rejection === null ? failureFor(error, 'submit') : null,
+      });
     } finally {
       setBusy(false);
     }
@@ -215,10 +245,16 @@ function FunnelRunner({ session, config, resolved, onRestart }: FunnelRunnerProp
       await updateSessionState(session.id, { answers, currentStepId: previous });
       setStepId(previous);
     } catch (error) {
-      setDraftState({ ...draft, stepId: step.id, failure: { message: errorMessage(error), action: 'back' } });
+      setDraftState({ ...draft, stepId: step.id, failure: failureFor(error, 'back') });
     } finally {
       setBusy(false);
     }
+  }
+
+  function retryFailure(failure: StepFailure): void {
+    if (failure.action === 'restart') onRestart();
+    else if (failure.action === 'back') void goBack();
+    else void submit();
   }
 
   function renderStep() {
@@ -299,9 +335,9 @@ function FunnelRunner({ session, config, resolved, onRestart }: FunnelRunnerProp
               <button
                 type="button"
                 className="link-button"
-                onClick={() => void (draft.failure?.action === 'back' ? goBack() : submit())}
+                onClick={() => draft.failure && retryFailure(draft.failure)}
               >
-                Try again
+                {draft.failure.action === 'restart' ? 'Start again' : 'Try again'}
               </button>
             </div>
           ) : null}
@@ -347,7 +383,22 @@ function countableSteps(resolved: ResolvedFunnel, answers: Answers, settings: Fu
   return steps.filter((candidate) => !settings.excludeTypes.includes(candidate.type)).length;
 }
 
-function errorMessage(error: unknown): string {
-  if (error instanceof ApiRequestError) return error.message;
-  return 'Something went wrong. Please try again.';
+/**
+ * The server re-validates answers with the same engine, so a 400 there belongs under the field;
+ * retrying the identical request would only fail again.
+ */
+function answerRejection(error: unknown): string | null {
+  if (!(error instanceof ApiRequestError) || error.status !== 400) return null;
+  if (error.code !== 'invalid_answer' && error.code !== 'unknown_answer') return null;
+  const details = error.details as { message?: unknown } | null | undefined;
+  return typeof details?.message === 'string' ? details.message : error.message;
+}
+
+/** A session that vanished or expired mid-funnel cannot be retried — offer a fresh start instead. */
+function failureFor(error: unknown, action: 'submit' | 'back'): StepFailure {
+  if (error instanceof ApiRequestError && (error.status === 404 || error.status === 410)) {
+    return { message: 'This session has expired. Start again to continue.', action: 'restart' };
+  }
+  const message = error instanceof ApiRequestError ? error.message : 'Something went wrong. Please try again.';
+  return { message, action };
 }

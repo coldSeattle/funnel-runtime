@@ -151,10 +151,11 @@ export function getVersions(): Promise<VersionsResponse> {
   return request<VersionsResponse>('/admin/versions', { admin: true });
 }
 
-/** The design doc only pins `{ version }` for 201; every field is optional so any superset fits. */
+/** Upload → 201 `{ version }`; publish / rollback → `{ activeVersion, fromVersion }`. Optional so one type fits all three. */
 export interface VersionMutationResponse {
   version?: number;
   activeVersion?: number | null;
+  fromVersion?: number | null;
 }
 
 export function createVersion(config: unknown): Promise<VersionMutationResponse> {
