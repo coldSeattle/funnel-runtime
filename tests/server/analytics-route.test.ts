@@ -8,8 +8,8 @@ const at = (seconds: number) => new Date(Date.UTC(2026, 8, 11, 10, 0, seconds)).
 
 /**
  * The aggregate fixture replayed through the real API: sessions via POST /api/sessions,
- * events via POST /api/events. s1–s5 run on v1 with server assignment, s6 on v3 as an
- * override session, so the version / variant / override filters each cut a known subset.
+ * events via POST /api/events. s1–s4 run on v1 with server assignment, s5 on v1 and s6 on v3
+ * as override sessions, so excludeOverrides cuts a subset that no version filter produces.
  */
 describe('GET /api/analytics', () => {
   const app = buildApp();
@@ -21,7 +21,7 @@ describe('GET /api/analytics', () => {
   };
 
   // Variants are forced with an override to keep the fixture deterministic, then relabelled as
-  // server-assigned so that excludeOverrides only removes the one real override session.
+  // server-assigned so that excludeOverrides removes exactly the real override sessions, s5 and s6.
   const markServerAssigned = (id: string) => {
     app.ctx.db.prepare("UPDATE sessions SET assignment_source = 'server' WHERE id = ?").run(id);
     app.ctx.db.prepare("UPDATE events SET assignment_source = 'server' WHERE session_id = ?").run(id);
@@ -60,7 +60,7 @@ describe('GET /api/analytics', () => {
     const s3 = await createSession({ variantOverride: 'B', utm: { campaign: 'autumn' } });
     const s4 = await createSession({ variantOverride: 'B' });
     const s5 = await createSession({ variantOverride: 'A', utm: { campaign: 'winter' } });
-    [s1, s2, s3, s4, s5].forEach(markServerAssigned);
+    [s1, s2, s3, s4].forEach(markServerAssigned);
 
     await app.inject({ method: 'POST', url: '/api/admin/versions', payload: loadRawConfig('funnel-v3.json') });
     await app.inject({ method: 'POST', url: '/api/admin/versions/3/publish' });
@@ -171,16 +171,26 @@ describe('GET /api/analytics', () => {
     for (const flag of ['1', 'true']) {
       const body = await get(`?excludeOverrides=${flag}`);
       expect(body.filters).toEqual({ excludeOverrides: true });
-      expect(body.totals).toEqual({ started: 5, reachedResult: 2, ctaClicked: 1, ctr: 0.5, primary: 0.2 });
+      expect(body.totals).toEqual({ started: 4, reachedResult: 2, ctaClicked: 1, ctr: 0.5, primary: 0.25 });
+      expect(body.exitsBeforeFirstStep).toBe(0); // s5, the only session without a view, is an override
+      expect(body.byVariant).toEqual({
+        A: { started: 2, reachedResult: 1, ctaClicked: 1, ctr: 1, primary: 0.5 },
+        B: { started: 2, reachedResult: 1, ctaClicked: 0, ctr: 0, primary: 0 },
+      });
       expect(Object.keys(body.byVersion)).toEqual(['1']);
       expect(invariantHolds(body)).toBe(true);
     }
+    // Overrides live on both versions, so no version filter selects the same sessions.
+    const v1 = await get('?version=1');
+    expect(v1.totals.started).toBe(5);
+    expect(v1.exitsBeforeFirstStep).toBe(1);
   });
 
   it('filters by version and orders steps by that version only', async () => {
     const body = await get('?version=3');
     expect(body.filters).toEqual({ version: 3 });
-    expect(body.totals.started).toBe(1);
+    expect(body.totals).toEqual({ started: 1, reachedResult: 1, ctaClicked: 1, ctr: 1, primary: 1 });
+    expect(invariantHolds(body)).toBe(true);
     expect(body.steps.map((s) => s.stepId)).toEqual([
       'intro',
       'team_size',
@@ -229,4 +239,25 @@ describe('GET /api/analytics', () => {
       expect(res.json().error.code).toBe('invalid_filter');
     },
   );
+});
+
+describe('GET /api/analytics on an empty database', () => {
+  const app = buildApp();
+  afterAll(async () => {
+    await app.close();
+  });
+
+  it('returns zeroed totals, null rates and empty options', async () => {
+    for (const query of ['', '?version=1&variant=A&excludeOverrides=1']) {
+      const res = await app.inject({ method: 'GET', url: `/api/analytics${query}` });
+      expect(res.statusCode).toBe(200);
+      const body = res.json() as AnalyticsResponse;
+      expect(body.totals).toEqual({ started: 0, reachedResult: 0, ctaClicked: 0, ctr: null, primary: null });
+      expect(body.steps).toEqual([]);
+      expect(body.exitsBeforeFirstStep).toBe(0);
+      expect(body.byVariant).toEqual({});
+      expect(body.byVersion).toEqual({});
+      expect(body.options).toEqual({ versions: [], variants: [], campaigns: [] });
+    }
+  });
 });

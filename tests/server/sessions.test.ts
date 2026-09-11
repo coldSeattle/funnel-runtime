@@ -105,6 +105,7 @@ describe('session create body validation', () => {
 describe('sessions', () => {
   const app = buildApp();
   let v1SessionId = '';
+  let v3SessionId = '';
 
   beforeAll(async () => {
     await app.inject({ method: 'POST', url: '/api/admin/versions', payload: loadRawConfig('funnel-v1.json') });
@@ -173,6 +174,34 @@ describe('sessions', () => {
     expect(freshBody.session.version).toBe(3);
     expect(freshBody.config.version).toBe(3);
     expect(freshBody.session.experimentId).toBe('question-order-and-result-framing-v3');
+    v3SessionId = freshBody.session.id;
+  });
+
+  it('keeps a v3 session on v3 after a rollback, while new sessions start on v1 again', async () => {
+    const rollback = await app.inject({ method: 'POST', url: '/api/admin/rollback' });
+    expect(rollback.statusCode).toBe(200);
+    expect(rollback.json()).toMatchObject({ activeVersion: 1, fromVersion: 3 });
+
+    const pinned = await app.inject({ method: 'GET', url: `/api/sessions/${v3SessionId}` });
+    expect(pinned.statusCode).toBe(200);
+    const pinnedBody = pinned.json() as SessionResponse;
+    expect(pinnedBody.session.version).toBe(3);
+    expect(pinnedBody.config.version).toBe(3);
+
+    // security_constraints exists only in v3, so this passes only if state is checked against v3.
+    const state = await app.inject({
+      method: 'PUT',
+      url: `/api/sessions/${v3SessionId}/state`,
+      payload: { answers: {}, currentStepId: 'security_constraints' },
+    });
+    expect(state.statusCode).toBe(200);
+    expect((state.json() as UpdateStateResponse).session).toMatchObject({ version: 3, currentStepId: 'security_constraints' });
+
+    const fresh = await app.inject({ method: 'POST', url: '/api/sessions', payload: {} });
+    expect(fresh.statusCode).toBe(201);
+    const freshBody = fresh.json() as SessionResponse;
+    expect(freshBody.session.version).toBe(1);
+    expect(freshBody.config.version).toBe(1);
   });
 
   it('stores validated answers and the current step', async () => {
@@ -277,5 +306,51 @@ describe('sessions', () => {
       payload: { answers: {}, currentStepId: 'intro' },
     });
     expect(state.statusCode).toBe(410);
+  });
+});
+
+describe('state validation is scoped to the session variant', () => {
+  const app = buildApp();
+  let variantA = '';
+  let variantB = '';
+
+  const put = (id: string, payload: object) => app.inject({ method: 'PUT', url: `/api/sessions/${id}/state`, payload });
+
+  beforeAll(async () => {
+    await app.inject({ method: 'POST', url: '/api/admin/versions', payload: loadRawConfig('funnel-v3.json') });
+    await app.inject({ method: 'POST', url: '/api/admin/versions/3/publish' });
+    const create = async (variantOverride: string) => {
+      const body = (await app.inject({ method: 'POST', url: '/api/sessions', payload: { variantOverride } })).json() as SessionResponse;
+      expect(body.session).toMatchObject({ version: 3, variant: variantOverride });
+      return body.session.id;
+    };
+    variantA = await create('A');
+    variantB = await create('B');
+  });
+  afterAll(async () => {
+    await app.close();
+  });
+
+  // tool_count is a v3 step, but only variant A's sequence contains it.
+  it('400s unknown_answer for an answer of a step that only the other variant has', async () => {
+    const res = await put(variantB, { answers: { tool_count: 3 }, currentStepId: 'intro' });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error).toMatchObject({ code: 'unknown_answer', details: { key: 'tool_count' } });
+  });
+
+  it('400s unknown_step for a step that only the other variant has', async () => {
+    const res = await put(variantB, { answers: {}, currentStepId: 'tool_count' });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error).toMatchObject({ code: 'unknown_step', details: { currentStepId: 'tool_count' } });
+  });
+
+  it('accepts the same payloads on a variant A session', async () => {
+    const answer = await put(variantA, { answers: { tool_count: 3 }, currentStepId: 'intro' });
+    expect(answer.statusCode).toBe(200);
+    expect((answer.json() as UpdateStateResponse).session.answers).toEqual({ tool_count: 3 });
+
+    const step = await put(variantA, { answers: {}, currentStepId: 'tool_count' });
+    expect(step.statusCode).toBe(200);
+    expect((step.json() as UpdateStateResponse).session.currentStepId).toBe('tool_count');
   });
 });
