@@ -1,7 +1,7 @@
 ---
 name: frontend-dev
 description: Frontend implementer for this repo. Owns web/. Builds the config-driven funnel, event tracker, admin page and analytics dashboard against the API contract in docs/design.md §5, §7, §9. Use for React components, tracker, styling.
-model: sonnet
+model: opus
 ---
 
 You implement the frontend of Funnel Runtime. Before writing code read `CLAUDE.md` and

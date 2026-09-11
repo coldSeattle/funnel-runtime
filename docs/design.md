@@ -23,12 +23,12 @@
 
 ```
 configs/      funnel-v1.json, funnel-v3.json
-shared/       types.ts, schema.ts (zod), engine/*  — общий код клиента и сервера
-server/       index.ts (запуск), app.ts (buildApp), db.ts, repos/, services/, routes/, seed.ts
-web/          main.tsx, api.ts, tracker.ts, funnel/, admin/, styles.css
-scripts/      generate-traffic.ts
-tests/        engine/, server/, analytics/
-docs/         design.md, plan.md, process.md, interview-notes.md
+shared/       types.ts, api.ts (DTO), schema.ts (zod), engine/*  — общий код клиента и сервера
+server/       index.ts (запуск), app.ts (buildApp), db.ts, errors.ts, repos/, services/, routes/, seed.ts
+web/          main.tsx, api.ts, tracker/ (core.ts, browser.ts), funnel/, admin/, styles.css
+scripts/      generate-traffic.ts, traffic/ (генератор), iteration2-check.ts, iteration2/ (приёмка v3)
+tests/        engine/, server/, analytics/, web/, helpers/
+docs/         design.md, plan.md, process.md, iteration2-prod-run.md, assignment.pdf
 ```
 
 Язык кода и интерфейса — английский (как конфиг), документация — русский.
@@ -115,10 +115,10 @@ events           (event_id PK, session_id, name, client_timestamp, server_timest
 | `PUT /api/sessions/:id/state` | Тело `{ answers, currentStepId }`. Проверка: шаг есть в последовательности варианта; каждый ответ проходит `validateAnswer`. 200 `{ session }`, 400 с деталями. |
 | `POST /api/sessions/:id/result` | Считает результат движком, сохраняет `result_id`. 200 `{ result }`. |
 | `POST /api/events` | Пачка событий (см. §7). Всегда 200 с постатусным ответом, если тело — валидный объект с массивом `events` (≤ 500), иначе 400. |
-| `GET /api/admin/versions` | `{ funnelId, activeVersion, versions: [{ version, title, releaseNote, status, createdAt, publishedAt, sessions }] }` |
+| `GET /api/admin/versions` | `{ funnelId, activeVersion, rollbackTarget, versions: [{ version, title, releaseNote, status, createdAt, publishedAt, sessions }] }`; `rollbackTarget` — версия, на которую уйдёт следующий Rollback, или `null` |
 | `POST /api/admin/versions` | Тело — сырой конфиг. Zod-валидация (400), дубликат номера (409). 201 `{ version }`. |
 | `POST /api/admin/versions/:version/publish` | Сделать активной. 404 нет версии, 409 уже активна. Запись в history. |
-| `POST /api/admin/rollback` | Вернуть предыдущую активную (по последней записи history с `from_version`). 409, если некуда. |
+| `POST /api/admin/rollback` | Отменить последнюю публикацию. Журнал `version_history` работает как стек: publish кладёт версию, rollback снимает; цель — версия под вершиной. 409 `nothing_to_rollback`, если некуда. |
 | `GET /api/admin/history` | Список publish / rollback по времени. |
 | `GET /api/analytics` | Query: `version`, `variant`, `utm_campaign`, `excludeOverrides=1`. См. §8. |
 
@@ -129,6 +129,9 @@ events           (event_id PK, session_id, name, client_timestamp, server_timest
 `unknown_step` / `invalid_filter` / `batch_too_large`; 401 `unauthorized`; 404 `session_not_found` /
 `version_not_found`; 409 `version_exists` / `funnel_mismatch` / `already_active` / `nothing_to_rollback`;
 410 `session_expired`; 503 `no_active_version`. POST с `content-type: application/json` и пустым телом допустим.
+Кроме того: 404 `not_found` — неизвестный маршрут; 413 `payload_too_large`; 415 `unsupported_media_type`;
+500 `internal` / `config_missing`; прочие 4xx — `bad_request`. Причины отказа отдельного события в пачке:
+`invalid_shape`, `unknown_session`, `unknown_event`, `unknown_step`, `invalid_properties`.
 
 Если задан `ADMIN_TOKEN`, маршруты `/api/admin/*` требуют заголовок `x-admin-token`. По умолчанию не задан, чтобы проверяющие могли жать Publish / Rollback.
 
@@ -172,9 +175,12 @@ events           (event_id PK, session_id, name, client_timestamp, server_timest
 1. Zod-проверка формы → иначе `rejected: invalid_shape`.
 2. Сессия существует → иначе `rejected: unknown_session`.
 3. `name` есть в `events.allowed` конфига версии сессии → иначе `rejected: unknown_event`.
-4. `properties` фильтруются по whitelist свойств события; лишние ключи молча отбрасываются
-   (так сырые ответы не попадают в аналитику: разрешён только `answer_kind`).
-5. `INSERT OR IGNORE` по `event_id` → `accepted` или `duplicate`.
+4. `step_id` — `null` или шаг варианта этой сессии → иначе `rejected: unknown_step`.
+5. `properties` фильтруются по whitelist свойств события; лишние ключи молча отбрасываются
+   (так сырые ответы не попадают в аналитику: разрешён только `answer_kind`). Значения — только скаляры
+   (строка до 200 символов, число, boolean, `null`), `answer_kind` — одно из `single | multi | number` →
+   иначе `rejected: invalid_properties`.
+6. `INSERT OR IGNORE` по `event_id` → `accepted` или `duplicate`.
 
 Ответ: `{ accepted, duplicates, rejected, results: [{ event_id, status, reason? }] }`.
 Повторная отправка той же пачки (retry после таймаута) даёт только `duplicate` — безопасно.
@@ -192,7 +198,7 @@ events           (event_id PK, session_id, name, client_timestamp, server_timest
 | `cta_clicked` | клиент | клик по CTA результата | `result_id, action` |
 | `recommendation_expanded` | клиент, только v3 | раскрыт список рекомендаций после CTA | `result_id, action, source` |
 
-Клиентский трекер (`web/tracker.ts`): очередь в `localStorage`, отправка пачкой через
+Клиентский трекер (`web/tracker/core.ts` — ядро без DOM, `web/tracker/browser.ts` — обвязка): очередь в `localStorage`, отправка пачкой через
 800 мс после первого события или при 10 событиях; при `pagehide` — `sendBeacon`.
 Событие удаляется из очереди только после ответа 200; при ошибке сети — повтор с
 backoff (1, 2, 4 … 30 с) с теми же `event_id`. Трекер не отправляет события, которых нет
@@ -228,7 +234,8 @@ backoff (1, 2, 4 … 30 с) с теми же `event_id`. Трекер не от�
 ```ts
 { filters, options: { versions: number[], variants: string[], campaigns: string[] },
   totals: Totals, steps: StepRow[], exitsBeforeFirstStep: number,
-  byVariant: Record<string, Totals>, byVersion: Record<string, Totals> }
+  byVariant: Record<string, Totals>, byVersion: Record<string, Totals>,
+  byVersionVariant: Record<string, Record<string, Totals>> }   // A/B внутри каждой версии
 Totals = { started, reachedResult, ctaClicked, ctr, primary }
 StepRow = { stepId, type, reached, reachRate, completed, completionRate, exits, exitRate }
 ```
@@ -239,7 +246,8 @@ StepRow = { stepId, type, reached, reachRate, completed, completionRate, exits, 
   рендер по `step.type` (`info`, `single-select`, `multi-select`, `number`, `result`).
 - Состояние: сессия с сервера (`answers`, `currentStepId`); локально только черновик текущего
   ответа. «Continue»: `validateAnswer` → `PUT state` (ответы + следующий шаг) →
-  `answer_submitted` + `step_completed`. «Back»: `back_clicked` → `PUT state` с предыдущим шагом.
+  `answer_submitted` + `step_completed`. «Back» (кнопка вверху экрана или системная «назад» телефона/браузера — шаги лежат в истории браузера):
+  `PUT state` с предыдущим шагом → после успеха один `back_clicked`.
   `step_viewed` — при каждом показе шага. Кнопка Back браузера — через `history` (если успеем).
 - Прогресс из `progress()`. Экран результата: `POST result` со статусами loading / error /
   retry из `content` шага; CTA `expand_recommendation` раскрывает рекомендации;
@@ -259,11 +267,12 @@ StepRow = { stepId, type, reached, reachRate, completed, completionRate, exits, 
 - Сессии создаются через реальный API (`POST /api/sessions`), проходят воронку движком
   (`visibleSteps`, `nextStepId`) со случайными валидными ответами → ветки честные,
   состояние сохраняется через `PUT state`, результат — через `POST result`.
-- UTM: 4 кампании × 4 источника; ~8 % сессий с override-вариантом.
+- UTM: 4 кампании, 6 пар source/medium; ~8 % сессий с override-вариантом.
 - Отвал: вероятность на каждом шаге (intro выше); B имеет встроенный +10 п.п. к клику CTA,
   чтобы сравнение вариантов было видно (задокументировано).
 - Помехи: 10 % сессий дублируют 1–2 события внутри пачки; 5 % пачек отправляются дважды;
-  10 % пачек перемешаны; 3 % содержат одно битое событие; часть сессий делает `back_clicked`.
+  10 % пачек перемешаны; 3 % содержат одно битое событие, 2 % — неизвестное событие; часть сессий делает
+  `back_clicked`; первые сессии гарантированно покрывают каждый вид помех.
 - PRNG по `--seed`, отдельный поток на каждую сессию. Вариант при этом назначает сервер
   случайно (клиент не должен его предсказывать), поэтому итоговые числа между прогонами немного
   различаются. Сверка всё равно точная: генератор считает ожидаемые числа (started,
@@ -289,8 +298,9 @@ StepRow = { stepId, type, reached, reachRate, completed, completionRate, exits, 
 - `npm run dev` — Vite (5173, прокси `/api` → 3000) + `tsx watch server/index.ts`.
 - `npm test`, `npm run typecheck`, `npm run build` (vite build + esbuild bundle сервера в `dist/`),
   `npm start` — `node dist/server.js`.
-- Env: `PORT` (3000), `DATA_DIR` (`./data`), `SEED_ON_BOOT` (`1`: если версий нет —
-  загрузить и опубликовать v1; если сессий нет — прогнать генератор), `ADMIN_TOKEN` (опц.).
+- Env: `PORT` (3000), `DATA_DIR` (`./data`), `ADMIN_TOKEN` (опц.), `SEED_ON_BOOT`. Пустая БД всегда получает
+  опубликованную v1 (независимо от флага); `SEED_ON_BOOT=1` на БД без сессий — 120 сессий генератора на v1,
+  затем сценарий второй итерации (публикация v3, 60 сессий на v3, откат на v1).
 - Dockerfile multi-stage на `node:22-bookworm-slim`. Хостинг: Render Web Service (Docker,
   free). Диск на free-тарифе эфемерный → демо-состояние воссоздаётся на старте, реальный
   таймлайн итераций — в git-тегах `iteration-1`, `iteration-2` и README.

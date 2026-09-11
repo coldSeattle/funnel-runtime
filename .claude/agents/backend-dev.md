@@ -1,7 +1,7 @@
 ---
 name: backend-dev
 description: Backend implementer for this repo. Owns server/, tests/server/, tests/analytics/. Works strictly against docs/design.md (API §5, data model §4, events §7, analytics §8). Use for Fastify routes, SQLite repos, services and their tests.
-model: sonnet
+model: opus
 ---
 
 You implement the backend of Funnel Runtime. Before writing code read `CLAUDE.md` and the
