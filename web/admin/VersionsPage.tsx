@@ -24,7 +24,14 @@ const STATUS_LABEL: Record<VersionStatus, string> = {
   draft: 'Draft',
 };
 
-const dateFormat = new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' });
+// Fixed English locale: the UI copy is English, so dates must not switch language with the browser.
+const dateFormat = new Intl.DateTimeFormat('en-GB', {
+  day: 'numeric',
+  month: 'short',
+  year: 'numeric',
+  hour: '2-digit',
+  minute: '2-digit',
+});
 
 function formatDate(iso: string | null): string {
   if (!iso) return '—';
@@ -171,8 +178,7 @@ export function VersionsPage() {
               <th scope="col" className="num">
                 Sessions
               </th>
-              <th scope="col">Created</th>
-              <th scope="col">Published</th>
+              <th scope="col">Created / published</th>
               <th scope="col">
                 <span className="sr-only">Actions</span>
               </th>
@@ -182,17 +188,20 @@ export function VersionsPage() {
             {versions.map((row) => (
               <tr key={row.version} className={row.status === 'active' ? 'is-active' : undefined}>
                 <td className="mono strong">v{row.version}</td>
-                <td>{row.title}</td>
+                <td className="title-cell">{row.title}</td>
                 <td className="muted note-cell">{row.releaseNote ?? '—'}</td>
                 <td>
                   <span className={`pill pill-${row.status}`}>{STATUS_LABEL[row.status] ?? row.status}</span>
                 </td>
-                <td className="num">{row.sessions.toLocaleString()}</td>
-                <td className="nowrap">{formatDate(row.createdAt)}</td>
-                <td className="nowrap">{formatDate(row.publishedAt)}</td>
+                <td className="num">{row.sessions.toLocaleString('en-US')}</td>
+                <td className="dates-cell">
+                  <span className="muted">Created</span> {formatDate(row.createdAt)}
+                  <br />
+                  <span className="muted">Published</span> {formatDate(row.publishedAt)}
+                </td>
                 <td className="actions">
                   {row.status === 'active' ? (
-                    <span className="muted small">Serving new sessions</span>
+                    <span className="muted small">Live</span>
                   ) : (
                     <button
                       type="button"
@@ -310,18 +319,18 @@ function UploadPanel({ onUploaded, onUnauthorized }: { onUploaded: () => void; o
       </div>
       <div className="upload-grid">
         <div className="file-row">
-          <label className="sr-only" htmlFor="config-file">
-            Config JSON file
-          </label>
           <input
             ref={fileRef}
             id="config-file"
-            className="file-input"
+            className="sr-only file-input"
             type="file"
             accept="application/json,.json"
             onChange={(event) => void readFile(event)}
           />
-          {fileName ? <span className="muted small">Loaded {fileName}</span> : null}
+          <label className="btn btn-small file-button" htmlFor="config-file">
+            Choose JSON file
+          </label>
+          <span className="muted small">{fileName ? `Loaded ${fileName}` : 'No file chosen'}</span>
         </div>
         <label className="sr-only" htmlFor="config-text">
           Config JSON

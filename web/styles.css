@@ -457,7 +457,9 @@ button {
   justify-content: center;
   gap: 8px;
   min-height: 54px;
-  padding: 0 24px;
+  padding: 12px 24px;
+  line-height: 1.25;
+  text-align: center;
   border: 1.5px solid transparent;
   border-radius: 999px;
   cursor: pointer;
@@ -958,8 +960,23 @@ code,
 }
 
 .note-cell {
-  min-width: 220px;
-  max-width: 360px;
+  min-width: 200px;
+  max-width: 320px;
+}
+
+.title-cell {
+  min-width: 160px;
+}
+
+.dates-cell {
+  font-size: var(--step-1);
+  line-height: 1.7;
+  white-space: nowrap;
+}
+
+.dates-cell .muted {
+  display: inline-block;
+  min-width: 70px;
 }
 
 .pill {
@@ -1008,28 +1025,10 @@ code,
   gap: 12px;
 }
 
-.file-input {
-  max-width: 100%;
-  color: var(--ink-soft);
-  font-size: var(--step-1);
-}
-
-.file-input::file-selector-button {
-  margin-right: 12px;
-  min-height: 34px;
-  padding: 0 14px;
-  background: var(--surface);
-  border: 1.5px solid var(--line-strong);
-  border-radius: 999px;
-  color: var(--ink);
-  cursor: pointer;
-  font: inherit;
-  font-weight: 600;
-}
-
-.file-input::file-selector-button:hover {
-  border-color: var(--accent);
-  color: var(--accent);
+/* The native input is visually hidden (its text follows the browser language); the label acts as the button. */
+.file-row:has(.file-input:focus-visible) .file-button {
+  outline: 3px solid var(--focus);
+  outline-offset: 2px;
 }
 
 .textarea {
