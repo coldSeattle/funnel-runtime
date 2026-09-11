@@ -44,6 +44,10 @@ export function VersionsPage() {
   const [loadError, setLoadError] = useState<ApiRequestError | null>(null);
   const [needsToken, setNeedsToken] = useState(false);
   const [reloadKey, setReloadKey] = useState(0);
+  // The reload that settled last. Until the one after a mutation lands, the shown rollback target
+  // may already be spent, so Rollback stays disabled.
+  const [settledReload, setSettledReload] = useState<number | null>(null);
+  const refreshing = settledReload !== reloadKey;
   const [busy, setBusy] = useState<string | null>(null);
   const [notice, setNotice] = useState<Notice | null>(null);
   const [confirmingRollback, setConfirmingRollback] = useState(false);
@@ -52,18 +56,21 @@ export function VersionsPage() {
 
   useEffect(() => {
     let active = true;
+    const requested = reloadKey;
     Promise.all([getVersions(), getHistory()]).then(
       ([versions, history]) => {
         if (!active) return;
         setData({ versions, history: history.history });
         setLoadError(null);
         setNeedsToken(false);
+        setSettledReload(requested);
       },
       (error: unknown) => {
         if (!active) return;
         const apiError = toApiError(error);
         setLoadError(apiError);
         if (apiError.isUnauthorized) setNeedsToken(true);
+        setSettledReload(requested);
       },
     );
     return () => {
@@ -80,8 +87,11 @@ export function VersionsPage() {
       reload();
     } catch (error) {
       const apiError = toApiError(error);
-      if (apiError.isUnauthorized) setNeedsToken(true);
       setNotice({ kind: 'error', text: apiError.message });
+      // A 409 (nothing_to_rollback, already_active) means the view was out of date: re-sync it.
+      // A 401 re-fetches once the token is saved.
+      if (apiError.isUnauthorized) setNeedsToken(true);
+      else reload();
     } finally {
       setBusy(null);
     }
@@ -93,7 +103,9 @@ export function VersionsPage() {
   );
   const history = useMemo(() => [...(data?.history ?? [])].sort((a, b) => b.id - a.id), [data]);
   const activeVersion = data?.versions.activeVersion ?? null;
-  const target = rollbackTarget(history, activeVersion);
+  // The server owns the rollback rule (an undo stack over the history); never re-derive it here.
+  const target = data?.versions.rollbackTarget ?? null;
+  const nothingToRollBack = data !== null && !refreshing && target === null;
 
   function publish(version: number): void {
     void mutate(
@@ -115,7 +127,12 @@ export function VersionsPage() {
       <span>
         Roll back v{activeVersion} → v{target}?
       </span>
-      <button type="button" className="btn btn-danger btn-small" disabled={busy !== null} onClick={confirmRollback}>
+      <button
+        type="button"
+        className="btn btn-danger btn-small"
+        disabled={busy !== null || refreshing}
+        onClick={confirmRollback}
+      >
         {busy === 'rollback' ? 'Rolling back…' : 'Confirm rollback'}
       </button>
       <button
@@ -129,16 +146,16 @@ export function VersionsPage() {
     </div>
   ) : (
     <>
-      {data && target === null ? (
+      {nothingToRollBack ? (
         <span className="muted small" id="rollback-hint">
-          Nothing to roll back to
+          Nothing to roll back
         </span>
       ) : null}
       <button
         type="button"
         className="btn"
-        disabled={!data || busy !== null || target === null}
-        aria-describedby={data && target === null ? 'rollback-hint' : undefined}
+        disabled={!data || busy !== null || refreshing || target === null}
+        aria-describedby={nothingToRollBack ? 'rollback-hint' : undefined}
         onClick={() => {
           setNotice(null);
           setConfirmingRollback(true);
@@ -251,17 +268,6 @@ export function VersionsPage() {
       </div>
     </AdminLayout>
   );
-}
-
-/**
- * Mirrors the server rule (server/services/versions.ts): the target is the `fromVersion` of the
- * latest history row, and there is nothing to roll back to when that row has none (the first
- * publish) or it points at the version that is already active.
- */
-function rollbackTarget(historyNewestFirst: HistoryEntry[], activeVersion: number | null): number | null {
-  const latest = historyNewestFirst[0];
-  if (activeVersion === null || latest === undefined || latest.fromVersion === null) return null;
-  return latest.fromVersion === activeVersion ? null : latest.fromVersion;
 }
 
 function UploadPanel({ onUploaded, onUnauthorized }: { onUploaded: () => void; onUnauthorized: () => void }) {
