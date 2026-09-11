@@ -1,4 +1,4 @@
-import Fastify, { LogController, type FastifyInstance } from 'fastify';
+import Fastify, { LogController, type FastifyInstance, type FastifyRequest } from 'fastify';
 import fastifyStatic from '@fastify/static';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
@@ -25,6 +25,20 @@ export interface AppOptions {
 
 /** Set by the in-process traffic generator; such requests are not logged one by one. */
 const SYNTHETIC_TRAFFIC_HEADER = 'x-synthetic-traffic';
+/** Where `inject` requests appear to come from (light-my-request uses 127.0.0.1). */
+const LOOPBACK = new Set(['127.0.0.1', '::1', '::ffff:127.0.0.1']);
+
+/**
+ * Anyone can send the header, so it only counts for in-process requests: from loopback and not
+ * relayed by a proxy (a proxy on the same host would otherwise make every visitor loopback).
+ */
+function isSyntheticTraffic(req: FastifyRequest): boolean {
+  return (
+    req.headers[SYNTHETIC_TRAFFIC_HEADER] === '1' &&
+    req.headers['x-forwarded-for'] === undefined &&
+    LOOPBACK.has(req.socket.remoteAddress ?? '')
+  );
+}
 
 export interface AppContext {
   db: Db;
@@ -47,7 +61,7 @@ export function buildApp(opts: AppOptions = {}): FastifyInstance {
   });
   // SEED_ON_BOOT pushes ~4,000 generator requests through inject; one line each would bury the log.
   app.addHook('onResponse', async (req, reply) => {
-    if (req.headers[SYNTHETIC_TRAFFIC_HEADER] === '1') return;
+    if (isSyntheticTraffic(req)) return;
     req.log.info({ method: req.method, url: req.url, statusCode: reply.statusCode, ms: Math.round(reply.elapsedTime) }, 'request');
   });
   const db = openDb(opts.dbPath ?? ':memory:');

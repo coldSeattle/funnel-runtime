@@ -65,6 +65,35 @@ describe('request logging', () => {
     expect(requestLines(lines)[0]).toMatchObject({ url: '/api/health?after=1' });
   });
 
+  it('honours the header from every loopback address form', async () => {
+    const { lines, stream } = captureLogs();
+    app = buildApp({ logStream: stream });
+
+    for (const remoteAddress of ['127.0.0.1', '::1', '::ffff:127.0.0.1']) {
+      await app.inject({ method: 'GET', url: `/api/health?from=${remoteAddress}`, headers: { 'x-synthetic-traffic': '1' }, remoteAddress });
+    }
+    await app.inject({ method: 'GET', url: '/api/health?after=1' });
+
+    await vi.waitFor(() => expect(requestLines(lines)).toHaveLength(1));
+    expect(requestLines(lines)[0]).toMatchObject({ url: '/api/health?after=1' });
+  });
+
+  it('logs remote and proxied requests even when they claim to be synthetic', async () => {
+    const { lines, stream } = captureLogs();
+    app = buildApp({ logStream: stream });
+
+    await app.inject({ method: 'GET', url: '/api/health?remote=1', headers: { 'x-synthetic-traffic': '1' }, remoteAddress: '203.0.113.7' });
+    // A reverse proxy on the same host connects from loopback but says who the visitor is.
+    await app.inject({
+      method: 'GET',
+      url: '/api/health?proxied=1',
+      headers: { 'x-synthetic-traffic': '1', 'x-forwarded-for': '203.0.113.7' },
+    });
+
+    await vi.waitFor(() => expect(requestLines(lines)).toHaveLength(2));
+    expect(requestLines(lines).map((l) => l.url)).toEqual(['/api/health?remote=1', '/api/health?proxied=1']);
+  });
+
   it('marks every request of the in-process generator transport as synthetic', async () => {
     const { lines, stream } = captureLogs();
     app = buildApp({ logStream: stream });
