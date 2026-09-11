@@ -20,6 +20,7 @@ import {
 import { ApiRequestError, updateSessionState } from '../api';
 import { createBrowserTracker } from '../tracker/browser';
 import { ProgressBar } from './ProgressBar';
+import { decidePop, initialDepth, readEntry, stampState } from './stepHistory';
 import { InfoStep } from './steps/InfoStep';
 import { MultiSelectStep } from './steps/MultiSelectStep';
 import { NumberStep } from './steps/NumberStep';
@@ -171,6 +172,12 @@ function FunnelRunner({ session, config, resolved, onRestart, focusOnMount }: Fu
   const [answers, setAnswers] = useState<Answers>(session.answers);
   const [stepId, setStepId] = useState(() => resolveCurrentStep(resolved, session.answers, session.currentStepId).id);
   const [busy, setBusy] = useState(false);
+  // The popstate handler runs outside React's render, so it reads "saving" from a ref.
+  const busyRef = useRef(false);
+  function setSaving(value: boolean): void {
+    busyRef.current = value;
+    setBusy(value);
+  }
 
   const step = useMemo(() => resolveCurrentStep(resolved, answers, stepId), [resolved, answers, stepId]);
 
@@ -219,8 +226,79 @@ function FunnelRunner({ session, config, resolved, onRestart, focusOnMount }: Fu
     if (active === null || active === document.body) focusStepHeading(mainRef.current);
   }
 
+  // ---- Browser / Android back (decisions in ./stepHistory.ts) ----
+  // uiDepth: the history depth the step on screen belongs to. entryDepth: the depth of the entry
+  // the browser is on. They differ only between a popstate and the navigation it triggers.
+  const uiDepthRef = useRef(0);
+  const entryDepthRef = useRef(0);
+  const mountStepIdRef = useRef(step.id);
+  const onPopRef = useRef<(state: unknown) => void>(() => undefined);
+
+  function writeEntry(mode: 'push' | 'replace', entryStepId: string, depth: number): void {
+    const state = stampState(window.history.state, { sessionId: session.id, stepId: entryStepId, depth });
+    try {
+      // No URL argument: the address stays as it is, so a shared link never lands mid-funnel.
+      if (mode === 'push') window.history.pushState(state, '');
+      else window.history.replaceState(state, '');
+      entryDepthRef.current = depth;
+    } catch {
+      // Browsers throttle history calls; the funnel keeps working, only browser back is coarser.
+    }
+  }
+
+  /** After a navigation settles, move the browser to the entry of the step on screen. */
+  function syncHistory(shownStepId: string): void {
+    const delta = uiDepthRef.current - entryDepthRef.current;
+    if (delta === 0) writeEntry('replace', shownStepId, uiDepthRef.current);
+    else window.history.go(delta);
+  }
+
+  useEffect(() => {
+    // The bootstrap entry is replaced, not pushed; a reload keeps the tab's entries and its depth.
+    const depth = initialDepth(window.history.state, session.id);
+    uiDepthRef.current = depth;
+    writeEntry('replace', mountStepIdRef.current, depth);
+    const onPopState = (event: PopStateEvent) => onPopRef.current(event.state);
+    window.addEventListener('popstate', onPopState);
+    return () => window.removeEventListener('popstate', onPopState);
+    // Once per runner; the runner is keyed by the session id.
+  }, []);
+
+  useEffect(() => {
+    onPopRef.current = (state: unknown) => {
+      const entry = readEntry(state);
+      if (entry !== null && entry.sessionId === session.id) entryDepthRef.current = entry.depth;
+      const decision = decidePop(entry, {
+        sessionId: session.id,
+        uiDepth: uiDepthRef.current,
+        busy: busyRef.current,
+        canGoBack: prevStepId(resolved, answers, step.id) !== null,
+      });
+      switch (decision.kind) {
+        case 'back':
+          void goBack();
+          break;
+        case 'realign':
+          window.history.go(decision.delta);
+          break;
+        case 'skip':
+          window.history.back();
+          break;
+        case 'accept':
+          if (entry !== null) {
+            uiDepthRef.current = entry.depth;
+            writeEntry('replace', step.id, entry.depth);
+          }
+          break;
+        case 'ignore':
+          break;
+      }
+    };
+  });
+
   const position = progress(resolved, answers, step.id);
-  const canGoBack = step.type !== 'result' && prevStepId(resolved, answers, step.id) !== null;
+  // The result has no Back button (browser back from it still returns to the last question).
+  const showBack = step.type !== 'result' && prevStepId(resolved, answers, step.id) !== null;
 
   function setDraftValue(value: DraftValue): void {
     if (busy) return; // inputs stay focusable while saving, so edits are ignored here instead
@@ -228,7 +306,7 @@ function FunnelRunner({ session, config, resolved, onRestart, focusOnMount }: Fu
   }
 
   async function submit(): Promise<void> {
-    if (busy) return;
+    if (busyRef.current) return;
     const interactive = isInteractive(step);
     let nextAnswers = answers;
 
@@ -249,7 +327,7 @@ function FunnelRunner({ session, config, resolved, onRestart, focusOnMount }: Fu
     const next = nextStepId(resolved, nextAnswers, step.id);
     if (next === null) return; // already on the last step of the sequence
 
-    setBusy(true);
+    setSaving(true);
     setDraftState({ ...draft, stepId: step.id, fieldError: null, failure: null });
     try {
       await updateSessionState(session.id, { answers: nextAnswers, currentStepId: next });
@@ -259,6 +337,9 @@ function FunnelRunner({ session, config, resolved, onRestart, focusOnMount }: Fu
       tracker.track('step_completed', { stepId: step.id, properties: { next_step_id: next } });
       setAnswers(nextAnswers);
       setStepId(next);
+      const depth = entryDepthRef.current + 1;
+      uiDepthRef.current = depth;
+      writeEntry('push', next, depth);
     } catch (error) {
       const rejection = answerRejection(error);
       setDraftState({
@@ -268,31 +349,49 @@ function FunnelRunner({ session, config, resolved, onRestart, focusOnMount }: Fu
         failure: rejection === null ? failureFor(error, 'submit') : null,
       });
     } finally {
-      setBusy(false);
+      setSaving(false);
     }
   }
 
+  /** The back navigation itself, shared by the Back button and browser / Android back. */
   async function goBack(): Promise<void> {
-    if (busy) return;
+    if (busyRef.current) return;
     const previous = prevStepId(resolved, answers, step.id);
     if (previous === null) return;
 
-    tracker.track('back_clicked', { stepId: step.id, properties: { destination_step_id: previous } });
-    setBusy(true);
+    setSaving(true);
     setDraftState({ ...draft, stepId: step.id, failure: null });
+    let shown = step.id;
     try {
       await updateSessionState(session.id, { answers, currentStepId: previous });
+      // Once per completed navigation: never for a failed attempt, never twice for a retry.
+      tracker.track('back_clicked', { stepId: step.id, properties: { destination_step_id: previous } });
       setStepId(previous);
+      shown = previous;
+      uiDepthRef.current = Math.max(0, uiDepthRef.current - 1);
     } catch (error) {
       setDraftState({ ...draft, stepId: step.id, failure: failureFor(error, 'back') });
     } finally {
-      setBusy(false);
+      setSaving(false);
     }
+    // After a failure this returns the browser to the step still on screen.
+    syncHistory(shown);
+  }
+
+  /**
+   * With a funnel entry behind this one, the browser moves first and the popstate runs goBack(), so
+   * the browser's stack keeps mirroring the steps. A session resumed in a fresh tab has no entry
+   * behind it: then goBack() runs directly and the current entry is re-stamped.
+   */
+  function requestBack(): void {
+    if (busyRef.current || prevStepId(resolved, answers, step.id) === null) return;
+    if (entryDepthRef.current > 0 && entryDepthRef.current === uiDepthRef.current) window.history.back();
+    else void goBack();
   }
 
   function retryFailure(failure: StepFailure): void {
     if (failure.action === 'restart') onRestart();
-    else if (failure.action === 'back') void goBack();
+    else if (failure.action === 'back') requestBack();
     else void submit();
   }
 
@@ -351,12 +450,24 @@ function FunnelRunner({ session, config, resolved, onRestart, focusOnMount }: Fu
     }
   }
 
+  // Back sits at the top, away from Continue: in the footer a tap meant for Continue landed on
+  // Back once the button row shifted. aria-disabled, not disabled, keeps focus while saving.
+  const backButton = showBack ? (
+    <button type="button" className="back-link" aria-disabled={busy || undefined} onClick={requestBack}>
+      <span aria-hidden="true">←</span> Back
+    </button>
+  ) : null;
+
   return (
     <div className="funnel">
       <div className="funnel-shell">
         <header className="funnel-top">
           <p className="brand">{config.title}</p>
-          {position ? <ProgressBar index={position.index} count={position.count} /> : null}
+          {position ? (
+            <ProgressBar index={position.index} count={position.count} start={backButton} />
+          ) : backButton ? (
+            <div className="progress-meta">{backButton}</div>
+          ) : null}
         </header>
 
         <main className="card" key={step.id} ref={mainRef} tabIndex={-1} aria-busy={busy || undefined}>
@@ -383,28 +494,15 @@ function FunnelRunner({ session, config, resolved, onRestart, focusOnMount }: Fu
           ) : null}
 
           {step.type === 'result' ? null : (
-            // aria-disabled, not disabled: a disabled button drops keyboard focus mid-save.
-            // submit() and goBack() already ignore clicks while busy.
-            <div className="action-row">
-              <button
-                type="button"
-                className={`button button-primary${busy ? ' is-busy' : ''}`}
-                aria-disabled={busy || undefined}
-                onClick={() => void submit()}
-              >
-                {step.content.primaryActionLabel ?? 'Continue'}
-              </button>
-              {canGoBack ? (
-                <button
-                  type="button"
-                  className="button button-ghost"
-                  aria-disabled={busy || undefined}
-                  onClick={() => void goBack()}
-                >
-                  Back
-                </button>
-              ) : null}
-            </div>
+            // submit() ignores clicks while busy; see backButton for why this is aria-disabled.
+            <button
+              type="button"
+              className={`button button-primary${busy ? ' is-busy' : ''}`}
+              aria-disabled={busy || undefined}
+              onClick={() => void submit()}
+            >
+              {step.content.primaryActionLabel ?? 'Continue'}
+            </button>
           )}
 
           <p className="version-badge" title={`Assignment: ${session.assignmentSource}`}>

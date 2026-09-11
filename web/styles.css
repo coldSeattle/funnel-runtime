@@ -88,6 +88,7 @@ button {
 .funnel {
   display: flex;
   justify-content: center;
+  min-height: 100vh;
   min-height: 100dvh;
 }
 
@@ -96,6 +97,7 @@ button {
   flex-direction: column;
   width: 100%;
   max-width: 520px;
+  min-height: 100vh;
   min-height: 100dvh;
   padding: 0 clamp(16px, 5vw, 24px);
 }
@@ -104,8 +106,8 @@ button {
   position: sticky;
   top: 0;
   z-index: 5;
-  padding: 18px 0 12px;
-  background: linear-gradient(var(--bg) 72%, rgba(244, 241, 234, 0));
+  padding: 14px 0 12px;
+  background: linear-gradient(var(--bg) 80%, rgba(244, 241, 234, 0));
 }
 
 .brand {
@@ -116,12 +118,22 @@ button {
   text-transform: uppercase;
 }
 
-.progress {
-  margin-top: 14px;
+.progress,
+.funnel-top > .progress-meta {
+  margin-top: 6px;
+}
+
+/* Back (left) and "Question i of n" (right) share one row above the bar. */
+.progress-meta {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 36px;
 }
 
 .progress-track {
   height: 6px;
+  margin-top: 4px;
   border-radius: 999px;
   background: var(--line);
   overflow: hidden;
@@ -135,13 +147,47 @@ button {
 }
 
 .progress-label {
-  margin-top: 8px;
+  margin-left: auto;
   color: var(--muted);
   font-size: var(--step-1);
   font-weight: 500;
 }
 
-/* Content-sized: the action bar is pushed to the bottom instead of the card stretching empty. */
+/* Small and at the top, out of the thumb path of the primary button in the footer. */
+.back-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 36px;
+  margin-left: -10px;
+  padding: 0 12px 0 10px;
+  background: none;
+  border: none;
+  border-radius: 999px;
+  color: var(--ink-soft);
+  cursor: pointer;
+  font-size: var(--step-2);
+  font-weight: 600;
+  transition:
+    background-color 140ms ease,
+    color 140ms ease;
+}
+
+.back-link:hover:not([aria-disabled='true']) {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.back-link[aria-disabled='true'] {
+  cursor: default;
+  opacity: 0.62;
+}
+
+/*
+ * Content-sized. The step fades in over 140 ms and never moves: a card sliding under the pointer
+ * turned clicks made during the transition into clicks on the wrong control (or none at all). It is
+ * interactive from its first frame; there is no pointer-events blocking anywhere.
+ */
 .card {
   margin-bottom: 16px;
   padding: clamp(20px, 5vw, 30px);
@@ -149,7 +195,7 @@ button {
   border: 1px solid var(--line);
   border-radius: var(--radius-lg);
   box-shadow: var(--shadow);
-  animation: step-in 280ms cubic-bezier(0.22, 0.61, 0.36, 1) both;
+  animation: step-in 140ms ease-out both;
 }
 
 .card-centered {
@@ -164,8 +210,18 @@ button {
 
 @keyframes step-in {
   from {
+    opacity: 0.2;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+/* Only for content revealed in place (the action list), never for a step transition. */
+@keyframes rise-in {
+  from {
     opacity: 0;
-    transform: translateY(10px);
+    transform: translateY(8px);
   }
   to {
     opacity: 1;
@@ -441,22 +497,26 @@ button {
 
 /* ---------- actions ---------- */
 
+/*
+ * Sticky, so long content scrolls under it and the primary action never leaves the screen. On
+ * phones it is also pushed to the bottom edge (the thumb zone); on wider screens it follows the
+ * card, so the action sits next to the content instead of at the far edge of a tall window.
+ */
 .action-bar {
   position: sticky;
   bottom: 0;
   z-index: 5;
   display: flex;
-  margin-top: auto;
   flex-direction: column;
   gap: 10px;
   padding: 14px 0 calc(16px + env(safe-area-inset-bottom));
   background: linear-gradient(rgba(244, 241, 234, 0), var(--bg) 28%);
 }
 
-.action-row {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
+@media (max-width: 599px) {
+  .action-bar {
+    margin-top: auto;
+  }
 }
 
 .button {
