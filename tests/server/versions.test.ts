@@ -162,6 +162,21 @@ describe('admin versions: upload, publish, rollback, history', () => {
     expect((await list()).versions).toHaveLength(1);
   });
 
+  it.each<[string, (raw: Record<string, any>) => void, (string | number)[]]>([
+    ['a variant override that breaks a step', (r) => (r.experiment.variants.B.stepOverrides.intro = { type: 'banana' }), ['experiment', 'variants', 'B', 'stepOverrides', 'intro', 'type']],
+    ['a TTL that would make expires_at an invalid date', (r) => (r.session.ttlHours = 1e12), ['session', 'ttlHours']],
+  ])('rejects %s with 400 invalid_config, so new sessions can never hit it', async (_label, mutate, path) => {
+    const raw = loadRawConfig('funnel-v1.json') as Record<string, any>;
+    raw.version = 9;
+    mutate(raw);
+    const res = await app.inject({ method: 'POST', url: '/api/admin/versions', payload: raw });
+    expect(res.statusCode).toBe(400);
+    const err = res.json().error as { code: string; details: { path: (string | number)[] }[] };
+    expect(err.code).toBe('invalid_config');
+    expect(err.details.map((d) => d.path)).toContainEqual(path);
+    expect((await list()).versions).toHaveLength(1);
+  });
+
   it('rejects a duplicate version number with 409', async () => {
     const res = await app.inject({ method: 'POST', url: '/api/admin/versions', payload: loadRawConfig('funnel-v1.json') });
     expect(res.statusCode).toBe(409);
