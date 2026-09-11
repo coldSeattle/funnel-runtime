@@ -14,11 +14,11 @@ import {
   progress,
   resolveCurrentStep,
   resolveVariant,
-  validateAnswer,
   visibleSteps,
 } from '../../shared/engine';
 import { ApiRequestError, updateSessionState } from '../api';
 import { createBrowserTracker } from '../tracker/browser';
+import { formatNumberDraft, validateDraft } from './answerDraft';
 import { ProgressBar } from './ProgressBar';
 import { decidePop, initialDepth, readEntry, stampState } from './stepHistory';
 import { InfoStep } from './steps/InfoStep';
@@ -311,7 +311,7 @@ function FunnelRunner({ session, config, resolved, onRestart, focusOnMount }: Fu
     let nextAnswers = answers;
 
     if (interactive) {
-      const validated = validateAnswer(step, draft.value);
+      const validated = validateDraft(step, draft.value);
       if (!validated.ok) {
         setDraftState({ ...draft, stepId: step.id, fieldError: validated.message, failure: null });
         return;
@@ -519,6 +519,7 @@ function freshDraft(step: Step, answers: Answers): StepDraft {
   const stored = key === null ? undefined : answers[key];
   let value: DraftValue = '';
   if (step.type === 'multi-select') value = Array.isArray(stored) ? [...stored] : [];
+  else if (typeof stored === 'number') value = formatNumberDraft(stored);
   else if (stored !== undefined && !Array.isArray(stored)) value = String(stored);
   return { stepId: step.id, value, fieldError: null, failure: null };
 }

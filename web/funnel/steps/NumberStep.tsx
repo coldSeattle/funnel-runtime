@@ -3,7 +3,7 @@ import { StepHeader } from './StepHeader';
 
 export interface NumberStepProps {
   step: Step;
-  /** Raw text as typed; validateAnswer parses it and words the error. */
+  /** Raw text as typed; validateDraft (answerDraft.ts) parses it and words the error. */
   value: string;
   onChange: (value: string) => void;
   onSubmit: () => void;
