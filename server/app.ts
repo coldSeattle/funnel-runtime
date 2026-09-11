@@ -59,12 +59,15 @@ export function buildApp(opts: AppOptions = {}): FastifyInstance {
     if (err instanceof HttpError) {
       return reply.status(err.statusCode).send({ error: { code: err.code, message: err.message, details: err.details } });
     }
-    const e = err as { statusCode?: unknown; message?: unknown };
+    const e = err as { statusCode?: unknown; message?: unknown; code?: unknown };
     const status = typeof e.statusCode === 'number' && e.statusCode >= 400 ? e.statusCode : 500;
     if (status >= 500) {
       // Unexpected 5xx messages come from drivers and internals; log them, never echo them to the client.
       app.log.error(err);
       return reply.status(status).send({ error: { code: 'internal', message: 'Internal error' } });
+    }
+    if (isBodyParseFailure(err, status)) {
+      return reply.status(400).send({ error: { code: 'invalid_body', message: 'The request body is not valid JSON' } });
     }
     return reply.status(status).send({
       error: {
@@ -94,4 +97,14 @@ export function buildApp(opts: AppOptions = {}): FastifyInstance {
   });
 
   return app;
+}
+
+/**
+ * Fastify reports unreadable bodies as FST_ERR_CTP_* 400s (broken JSON, prototype poisoning,
+ * a bad content-length); a stream error surfaces as a SyntaxError with statusCode 400.
+ */
+function isBodyParseFailure(err: unknown, status: number): boolean {
+  if (status !== 400) return false;
+  const code = (err as { code?: unknown }).code;
+  return (typeof code === 'string' && code.startsWith('FST_ERR_CTP_')) || err instanceof SyntaxError;
 }

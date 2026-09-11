@@ -104,6 +104,10 @@ export function createSessionsService(
       if (!isPlainObject(payload.answers)) {
         throw new HttpError(400, 'invalid_body', '`answers` must be an object of answer key → value');
       }
+      const currentStepId = payload.currentStepId;
+      if (typeof currentStepId !== 'string') {
+        throw new HttpError(400, 'invalid_body', 'currentStepId must be a string');
+      }
       const resolved = resolveVariant(config, row.variant);
 
       const stepByAnswerKey = new Map(
@@ -124,9 +128,8 @@ export function createSessionsService(
         if (result.value !== undefined) answers[key] = result.value;
       }
 
-      const currentStepId = payload.currentStepId;
-      if (typeof currentStepId !== 'string' || !resolved.steps.some((s) => s.id === currentStepId)) {
-        throw new HttpError(400, 'unknown_step', `"${String(currentStepId)}" is not a step of variant ${row.variant}`, {
+      if (!resolved.steps.some((s) => s.id === currentStepId)) {
+        throw new HttpError(400, 'unknown_step', `"${currentStepId}" is not a step of variant ${row.variant}`, {
           currentStepId,
         });
       }

@@ -200,6 +200,16 @@ describe('sessions', () => {
     expect(res.json().error.code).toBe('unknown_step');
   });
 
+  it.each([
+    ['missing', { answers: {} }],
+    ['not a string', { answers: {}, currentStepId: 42 }],
+    ['null', { answers: {}, currentStepId: null }],
+  ])('400s invalid_body when currentStepId is %s', async (_label, payload) => {
+    const res = await app.inject({ method: 'PUT', url: `/api/sessions/${v1SessionId}/state`, payload });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error).toMatchObject({ code: 'invalid_body', message: 'currentStepId must be a string' });
+  });
+
   it('400s when answers is not a plain object', async () => {
     const res = await app.inject({
       method: 'PUT',

@@ -184,7 +184,7 @@ describe('admin versions: upload, publish, rollback, history', () => {
     expect(res.json()).toMatchObject({ activeVersion: 3, fromVersion: 1 });
   });
 
-  it('answers a syntactically broken JSON body with a 400 JSON error', async () => {
+  it('answers a syntactically broken JSON body with 400 invalid_body', async () => {
     const res = await app.inject({
       method: 'POST',
       url: '/api/admin/versions',
@@ -192,7 +192,18 @@ describe('admin versions: upload, publish, rollback, history', () => {
       payload: '{"version": 1,',
     });
     expect(res.statusCode).toBe(400);
-    expect(res.json().error.code).toBe('bad_request');
+    expect(res.json().error.code).toBe('invalid_body');
+  });
+
+  it('answers a prototype-poisoning JSON body with 400 invalid_body', async () => {
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/admin/versions',
+      headers: { 'content-type': 'application/json' },
+      payload: '{"__proto__": {"polluted": true}}',
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error.code).toBe('invalid_body');
   });
 });
 

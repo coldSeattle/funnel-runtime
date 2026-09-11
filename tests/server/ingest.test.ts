@@ -152,6 +152,17 @@ describe('event ingestion', () => {
     }
   });
 
+  it('400s invalid_body on a syntactically broken JSON body', async () => {
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/events',
+      headers: { 'content-type': 'application/json' },
+      payload: '{"events": [',
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error.code).toBe('invalid_body');
+  });
+
   it('400s on a batch larger than 500 events', async () => {
     const events = Array.from({ length: 501 }, (_, i) => event({ event_id: `big${i}`, session_id: v1 }));
     const res = await ingest({ events });

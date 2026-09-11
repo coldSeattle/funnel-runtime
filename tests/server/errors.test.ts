@@ -10,8 +10,17 @@ describe('error handler', () => {
   app.get('/api/test/unavailable', async () => {
     throw new HttpError(503, 'no_active_version', 'No funnel version is published yet');
   });
+  app.get('/api/test/client-error', async () => {
+    throw Object.assign(new Error('Something the client did'), { statusCode: 400 });
+  });
   afterAll(async () => {
     await app.close();
+  });
+
+  it('keeps the bad_request fallback for a 4xx that is not a body parse failure', async () => {
+    const res = await app.inject({ method: 'GET', url: '/api/test/client-error' });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error).toEqual({ code: 'bad_request', message: 'Something the client did' });
   });
 
   it('does not leak the message of an unexpected error', async () => {
