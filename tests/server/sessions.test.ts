@@ -157,6 +157,16 @@ describe('sessions', () => {
     expect((reread.json() as SessionResponse).session.resultId).toBe('hybrid_structured');
   });
 
+  it('accepts a bodiless result request sent with a JSON content-type', async () => {
+    const res = await app.inject({
+      method: 'POST',
+      url: `/api/sessions/${v1SessionId}/result`,
+      headers: { 'content-type': 'application/json' },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().result.id).toBe('hybrid_structured');
+  });
+
   it('410s once the session has expired', async () => {
     const expired = await app.inject({ method: 'POST', url: '/api/sessions', payload: {} });
     const id = (expired.json() as SessionResponse).session.id;

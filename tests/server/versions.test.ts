@@ -149,6 +149,51 @@ describe('admin versions: upload, publish, rollback, history', () => {
     ]);
     expect(history[0]!.at).toMatch(/^\d{4}-\d{2}-\d{2}T/);
   });
+
+  it('rolls back again: the target is the version the last transition came from', async () => {
+    const v3Before = (await list()).versions.find((v) => v.version === 3)!.publishedAt;
+    const res = await app.inject({ method: 'POST', url: '/api/admin/rollback' });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({ activeVersion: 3, fromVersion: 1 });
+
+    const v3 = (await list()).versions.find((v) => v.version === 3)!;
+    expect(v3.status).toBe('active');
+    expect(v3.publishedAt).toBe(v3Before);
+
+    const { history } = (await app.inject({ method: 'GET', url: '/api/admin/history' })).json() as HistoryResponse;
+    expect(history.at(-1)).toMatchObject({ action: 'rollback', fromVersion: 1, toVersion: 3 });
+  });
+
+  it('re-publishing a version keeps its first published_at', async () => {
+    const v1Before = (await list()).versions.find((v) => v.version === 1)!.publishedAt;
+    const res = await app.inject({ method: 'POST', url: '/api/admin/versions/1/publish' });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({ activeVersion: 1, fromVersion: 3 });
+    const v1 = (await list()).versions.find((v) => v.version === 1)!;
+    expect(v1.status).toBe('active');
+    expect(v1.publishedAt).toBe(v1Before);
+  });
+
+  it('accepts bodiless admin POSTs sent with a JSON content-type, as fetch wrappers often do', async () => {
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/admin/rollback',
+      headers: { 'content-type': 'application/json' },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({ activeVersion: 3, fromVersion: 1 });
+  });
+
+  it('answers a syntactically broken JSON body with a 400 JSON error', async () => {
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/admin/versions',
+      headers: { 'content-type': 'application/json' },
+      payload: '{"version": 1,',
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error.code).toBe('bad_request');
+  });
 });
 
 describe('admin auth', () => {

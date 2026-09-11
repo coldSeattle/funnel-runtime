@@ -41,6 +41,20 @@ export function buildApp(opts: AppOptions = {}): FastifyInstance {
     db.close();
   });
 
+  // Fetch wrappers commonly send `content-type: application/json` with no body on bodiless POSTs
+  // (publish, rollback, result); Fastify rejects that with a 400 by default. Treat an empty body as
+  // "no body" and keep the default parser, with its prototype-poisoning guard, for everything else.
+  const defaultJsonParser = app.getDefaultJsonParser('error', 'error');
+  app.removeContentTypeParser('application/json');
+  app.addContentTypeParser('application/json', { parseAs: 'string' }, (req, body, done) => {
+    const text = typeof body === 'string' ? body : body.toString('utf8');
+    if (text.trim() === '') {
+      done(null, undefined);
+      return;
+    }
+    defaultJsonParser(req, text, done);
+  });
+
   app.setErrorHandler((err: unknown, _req, reply) => {
     if (err instanceof HttpError) {
       return reply.status(err.statusCode).send({ error: { code: err.code, message: err.message, details: err.details } });
