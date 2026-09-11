@@ -48,6 +48,15 @@ export function aggregate(events: AggregateEvent[], stepOrder: StepOrderEntry[])
   const byVariant = new Map<string, Funnel>();
   const byVersion = new Map<string, Funnel>();
 
+  // Pass 1: the started sets. Every other metric is counted only inside them, so a session whose
+  // session_started is missing (lost, or cut by a filter) can never break the invariant.
+  for (const event of events) {
+    if (event.name !== 'session_started') continue;
+    overall.started.add(event.session_id);
+    group(byVariant, event.variant).started.add(event.session_id);
+    group(byVersion, String(event.funnel_version)).started.add(event.session_id);
+  }
+
   const reached = new Map<string, Set<string>>();
   const completed = new Map<string, Set<string>>();
   const lastView = new Map<string, LastView>();
@@ -55,9 +64,10 @@ export function aggregate(events: AggregateEvent[], stepOrder: StepOrderEntry[])
 
   for (const event of events) {
     const session = event.session_id;
+    if (!overall.started.has(session)) continue;
     track(overall, event.name, session);
-    track(group(byVariant, event.variant), event.name, session);
-    track(group(byVersion, String(event.funnel_version)), event.name, session);
+    track(byVariant.get(event.variant), event.name, session);
+    track(byVersion.get(String(event.funnel_version)), event.name, session);
 
     const stepId = event.step_id;
     if (stepId === null || stepId === '') continue;
@@ -131,9 +141,10 @@ function group(map: Map<string, Funnel>, key: string): Funnel {
   return created;
 }
 
-function track(funnel: Funnel, name: string, session: string): void {
-  if (name === 'session_started') funnel.started.add(session);
-  else if (name === 'result_viewed') funnel.reachedResult.add(session);
+/** Counts result / CTA only for a session in this group's started set (filled in pass 1). */
+function track(funnel: Funnel | undefined, name: string, session: string): void {
+  if (!funnel?.started.has(session)) return;
+  if (name === 'result_viewed') funnel.reachedResult.add(session);
   else if (name === 'cta_clicked') funnel.ctaClicked.add(session);
 }
 

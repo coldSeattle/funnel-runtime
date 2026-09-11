@@ -180,6 +180,29 @@ describe('aggregate', () => {
     expect(aggregate(shuffled, stepOrder)).toEqual(result);
   });
 
+  it('ignores sessions without session_started, so the invariant holds for orphan events', () => {
+    // s7 has no session_started (e.g. the filter cut it, or its start event was lost): none of
+    // its events may count anywhere, overall or per variant / version.
+    const orphan = [
+      row({ session: 's7', name: 'step_viewed', step: 'intro', c: 1, variant: 'A' }),
+      row({ session: 's7', name: 'step_completed', step: 'intro', c: 2, variant: 'A' }),
+      row({ session: 's7', name: 'step_viewed', step: 'result', c: 3, variant: 'A' }),
+      row({ session: 's7', name: 'result_viewed', step: 'result', c: 4, variant: 'A' }),
+      row({ session: 's7', name: 'cta_clicked', step: 'result', c: 5, variant: 'A' }),
+      row({ session: 's8', name: 'result_viewed', step: 'result', c: 1, variant: 'C', version: 2 }),
+    ];
+    const withOrphans = aggregate([...fixture(), ...orphan], stepOrder);
+    expect(withOrphans).toEqual(result);
+
+    const onlyOrphans = aggregate(orphan, stepOrder);
+    expect(onlyOrphans.totals).toEqual({ started: 0, reachedResult: 0, ctaClicked: 0, ctr: null, primary: null });
+    expect(onlyOrphans.steps.every((s) => s.reached === 0 && s.completed === 0 && s.exits === 0)).toBe(true);
+    expect(onlyOrphans.byVariant).toEqual({});
+    expect(onlyOrphans.byVersion).toEqual({});
+    const exits = onlyOrphans.steps.reduce((sum, s) => sum + s.exits, 0);
+    expect(exits + onlyOrphans.exitsBeforeFirstStep + onlyOrphans.totals.reachedResult).toBe(onlyOrphans.totals.started);
+  });
+
   it('returns zeroed totals and null rates for an empty event set', () => {
     const empty = aggregate([], stepOrder);
     expect(empty.totals).toEqual({ started: 0, reachedResult: 0, ctaClicked: 0, ctr: null, primary: null });
