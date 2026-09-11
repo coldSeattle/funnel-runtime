@@ -110,11 +110,10 @@ export function VersionsPage() {
     }).then(() => setConfirmingRollback(false));
   }
 
-  const actions = confirmingRollback ? (
+  const actions = confirmingRollback && target !== null ? (
     <div className="confirm-inline" role="group" aria-label="Confirm rollback">
       <span>
-        Roll back {activeVersion !== null ? `v${activeVersion}` : 'the active version'} →{' '}
-        {target !== null ? `v${target}` : 'previous version'}?
+        Roll back v{activeVersion} → v{target}?
       </span>
       <button type="button" className="btn btn-danger btn-small" disabled={busy !== null} onClick={confirmRollback}>
         {busy === 'rollback' ? 'Rolling back…' : 'Confirm rollback'}
@@ -129,17 +128,25 @@ export function VersionsPage() {
       </button>
     </div>
   ) : (
-    <button
-      type="button"
-      className="btn"
-      disabled={!data || busy !== null}
-      onClick={() => {
-        setNotice(null);
-        setConfirmingRollback(true);
-      }}
-    >
-      Rollback…
-    </button>
+    <>
+      {data && target === null ? (
+        <span className="muted small" id="rollback-hint">
+          Nothing to roll back to
+        </span>
+      ) : null}
+      <button
+        type="button"
+        className="btn"
+        disabled={!data || busy !== null || target === null}
+        aria-describedby={data && target === null ? 'rollback-hint' : undefined}
+        onClick={() => {
+          setNotice(null);
+          setConfirmingRollback(true);
+        }}
+      >
+        Rollback…
+      </button>
+    </>
   );
 
   const subtitle = data ? (
@@ -246,11 +253,15 @@ export function VersionsPage() {
   );
 }
 
-/** Mirrors the server rule from design §5: the from_version of the latest history entry that has one. */
+/**
+ * Mirrors the server rule (server/services/versions.ts): the target is the `fromVersion` of the
+ * latest history row, and there is nothing to roll back to when that row has none (the first
+ * publish) or it points at the version that is already active.
+ */
 function rollbackTarget(historyNewestFirst: HistoryEntry[], activeVersion: number | null): number | null {
-  if (activeVersion === null) return null;
-  const entry = historyNewestFirst.find((item) => item.fromVersion !== null);
-  return entry?.fromVersion ?? null;
+  const latest = historyNewestFirst[0];
+  if (activeVersion === null || latest === undefined || latest.fromVersion === null) return null;
+  return latest.fromVersion === activeVersion ? null : latest.fromVersion;
 }
 
 function UploadPanel({ onUploaded, onUnauthorized }: { onUploaded: () => void; onUnauthorized: () => void }) {
