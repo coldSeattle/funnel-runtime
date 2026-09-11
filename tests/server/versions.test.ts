@@ -115,6 +115,83 @@ describe('POST /api/admin/rollback follows the undo stack', () => {
   });
 });
 
+/** mulberry32: a tiny seeded PRNG, so every random walk below is reproducible. */
+function prng(seed: number): () => number {
+  let a = seed >>> 0;
+  return () => {
+    a = (a + 0x6d2b79f5) >>> 0;
+    let t = a;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+// The admin page shows "Roll back vX → vY?" from `rollbackTarget` and disables the button on null,
+// so the field must predict POST /rollback exactly — never a target the server then refuses.
+describe('GET /api/admin/versions rollbackTarget predicts POST /api/admin/rollback', () => {
+  it.each([1, 7, 42, 2026])('random walk of publish and rollback calls, seed %i', async (seed) => {
+    const app = buildApp();
+    try {
+      for (const payload of [loadRawConfig('funnel-v1.json'), makeSyntheticV2(), loadRawConfig('funnel-v3.json')]) {
+        expect((await app.inject({ method: 'POST', url: '/api/admin/versions', payload })).statusCode).toBe(201);
+      }
+      const random = prng(seed);
+      // Independent model of the contract: a successful publish pushes, a successful rollback pops.
+      const stack: number[] = [];
+      const seen = { refused: 0, rolledBack: 0, maxDepth: 0, successes: 0 };
+
+      for (let i = 0; i < 150; i++) {
+        const before = (await app.inject({ method: 'GET', url: '/api/admin/versions' })).json() as VersionsResponse;
+        expect(before.activeVersion).toBe(stack.at(-1) ?? null);
+        expect(before.rollbackTarget).toBe(stack.length >= 2 ? stack[stack.length - 2] : null);
+        if (before.rollbackTarget !== null) {
+          expect(before.rollbackTarget).not.toBe(before.activeVersion);
+          expect(before.versions.map((v) => v.version)).toContain(before.rollbackTarget);
+        }
+
+        if (random() < 0.45) {
+          const res = await app.inject({ method: 'POST', url: '/api/admin/rollback' });
+          if (before.rollbackTarget === null) {
+            expect(res.statusCode).toBe(409);
+            expect(res.json().error.code).toBe('nothing_to_rollback');
+            seen.refused++;
+          } else {
+            expect(res.statusCode).toBe(200);
+            expect(res.json()).toEqual({ activeVersion: before.rollbackTarget, fromVersion: before.activeVersion });
+            stack.pop();
+            seen.rolledBack++;
+            seen.successes++;
+          }
+        } else {
+          const version = 1 + Math.floor(random() * 3);
+          const res = await app.inject({ method: 'POST', url: `/api/admin/versions/${version}/publish` });
+          if (version === before.activeVersion) {
+            expect(res.statusCode).toBe(409);
+            expect(res.json().error.code).toBe('already_active');
+          } else {
+            expect(res.statusCode).toBe(200);
+            expect(res.json()).toEqual({ activeVersion: version, fromVersion: before.activeVersion });
+            stack.push(version);
+            seen.successes++;
+          }
+        }
+        seen.maxDepth = Math.max(seen.maxDepth, stack.length);
+      }
+
+      // The walk is not vacuous: it hit refusals, real undos and multi-step stacks.
+      expect(seen.refused).toBeGreaterThan(0);
+      expect(seen.rolledBack).toBeGreaterThan(0);
+      expect(seen.maxDepth).toBeGreaterThanOrEqual(3);
+      // Refused calls write nothing; every successful one is exactly one history row.
+      const { history } = (await app.inject({ method: 'GET', url: '/api/admin/history' })).json() as HistoryResponse;
+      expect(history).toHaveLength(seen.successes);
+    } finally {
+      await app.close();
+    }
+  });
+});
+
 describe('admin versions: upload, publish, rollback, history', () => {
   const app = buildApp();
   afterAll(async () => {
