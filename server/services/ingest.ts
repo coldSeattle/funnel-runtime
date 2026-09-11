@@ -2,6 +2,7 @@ import { z } from 'zod';
 import type { EventRow, EventsRepo } from '../repos/events';
 import type { SessionRow, SessionsRepo } from '../repos/sessions';
 import type { VersionsService } from './versions';
+import { clientTimestampSchema } from './timestamps';
 import { allowedEvents, filterEventProperties } from '../../shared/engine';
 import type { IngestResponse, IngestResult } from '../../shared/api';
 
@@ -16,7 +17,7 @@ const incomingEventSchema = z
     event_id: z.string().min(1),
     session_id: z.string(),
     name: z.string(),
-    client_timestamp: z.string().refine((s) => !Number.isNaN(Date.parse(s)), 'client_timestamp must be a date'),
+    client_timestamp: clientTimestampSchema,
     step_id: z.string().nullish(),
     properties: z.record(z.string(), z.unknown()).optional(),
   })
@@ -71,7 +72,7 @@ export function createIngestService(
             event_id: event.event_id,
             session_id: session.id,
             name: event.name,
-            client_timestamp: new Date(Date.parse(event.client_timestamp)).toISOString(),
+            client_timestamp: event.client_timestamp,
             server_timestamp: serverTimestamp,
             // Everything below comes from the session row; the client is never trusted with it.
             funnel_id: session.funnel_id,

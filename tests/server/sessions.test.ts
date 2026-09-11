@@ -68,6 +68,29 @@ describe('session create body validation', () => {
     expect(campaigns).not.toContain('42.0');
   });
 
+  const sessionStarted = (id: string) =>
+    app.ctx.db
+      .prepare("SELECT client_timestamp, server_timestamp FROM events WHERE session_id = ? AND name = 'session_started'")
+      .get(id) as { client_timestamp: string; server_timestamp: string };
+
+  it.each([
+    ['a bare number', '1'],
+    ['a locale date', 'Sep 11 2026'],
+    ['an ISO datetime without an offset', '2026-09-11T10:00:00'],
+    ['garbage', 'not-a-date'],
+  ])('starts the session anyway and uses the server time when clientTimestamp is %s', async (_label, clientTimestamp) => {
+    const res = await app.inject({ method: 'POST', url: '/api/sessions', payload: { clientTimestamp } });
+    expect(res.statusCode).toBe(201);
+    const started = sessionStarted((res.json() as SessionResponse).session.id);
+    expect(started.client_timestamp).toBe(started.server_timestamp);
+  });
+
+  it('keeps a valid clientTimestamp with an offset, normalised to UTC', async () => {
+    const res = await app.inject({ method: 'POST', url: '/api/sessions', payload: { clientTimestamp: '2026-09-11T13:00:00+03:00' } });
+    expect(res.statusCode).toBe(201);
+    expect(sessionStarted((res.json() as SessionResponse).session.id).client_timestamp).toBe('2026-09-11T10:00:00.000Z');
+  });
+
   it('still accepts a bodiless create sent with a JSON content-type', async () => {
     const res = await app.inject({
       method: 'POST',

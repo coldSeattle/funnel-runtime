@@ -86,6 +86,31 @@ describe('event ingestion', () => {
     ]);
   });
 
+  it.each([
+    ['a bare number', '1'],
+    ['a locale date', 'Sep 11 2026'],
+    ['an ISO datetime without an offset', '2026-09-11T10:00:00'],
+    ['a date without a time', '2026-09-11'],
+    ['an impossible date', '2026-02-30T10:00:00Z'],
+  ])('rejects %s as client_timestamp with invalid_shape', async (_label, clientTimestamp) => {
+    const res = (
+      await ingest({ events: [event({ event_id: `ts-bad-${clientTimestamp}`, session_id: v1, client_timestamp: clientTimestamp })] })
+    ).json() as IngestResponse;
+    expect(res.results[0]).toMatchObject({ status: 'rejected', reason: 'invalid_shape' });
+  });
+
+  it.each([
+    ['Z', '2026-09-11T10:00:00Z', '2026-09-11T10:00:00.000Z'],
+    ['a numeric offset', '2026-09-11T13:00:00+03:00', '2026-09-11T10:00:00.000Z'],
+    ['microseconds', '2026-09-11T10:00:00.123456Z', '2026-09-11T10:00:00.123Z'],
+  ])('accepts an ISO datetime with %s and stores it as UTC', async (_label, clientTimestamp, stored) => {
+    const id = `ts-ok-${clientTimestamp}`;
+    const res = (await ingest({ events: [event({ event_id: id, session_id: v1, client_timestamp: clientTimestamp })] })).json() as IngestResponse;
+    expect(res.results[0]).toMatchObject({ status: 'accepted' });
+    const row = app.ctx.db.prepare('SELECT client_timestamp FROM events WHERE event_id = ?').get(id) as { client_timestamp: string };
+    expect(row.client_timestamp).toBe(stored);
+  });
+
   it('rejects events for an unknown session', async () => {
     const res = (await ingest({ events: [event({ event_id: 'ghost', session_id: 'no-such-session' })] })).json() as IngestResponse;
     expect(res).toMatchObject({ accepted: 0, duplicates: 0, rejected: 1 });

@@ -3,6 +3,7 @@ import { HttpError } from '../errors';
 import type { EventsRepo } from '../repos/events';
 import type { SessionRow, SessionsRepo } from '../repos/sessions';
 import type { VersionsService } from './versions';
+import { toIsoTimestamp } from './timestamps';
 import { answerKey, computeResult as computeResultFromEngine, resolveVariant, validateAnswer } from '../../shared/engine';
 import type { Answers, FunnelConfig, ResultDef } from '../../shared/types';
 import type {
@@ -159,12 +160,6 @@ function pickWeightedVariant(config: FunnelConfig): string {
     if (ticket < 0) return key;
   }
   return entries[entries.length - 1]![0];
-}
-
-function toIsoTimestamp(value: string | undefined): string | null {
-  if (typeof value !== 'string') return null;
-  const ms = Date.parse(value);
-  return Number.isNaN(ms) ? null : new Date(ms).toISOString();
 }
 
 export function toDto(row: SessionRow): SessionDto {
