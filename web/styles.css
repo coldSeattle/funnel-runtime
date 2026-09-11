@@ -443,6 +443,26 @@ button {
   font-weight: 600;
 }
 
+/* The limit is reached: unselected chips stay focusable but read and look unavailable. */
+.chip.is-blocked {
+  border-style: dashed;
+  background: var(--surface-sunk);
+  color: var(--muted);
+  cursor: not-allowed;
+}
+
+.chip.is-blocked:hover {
+  border-color: var(--line-strong);
+}
+
+.chip.is-blocked:has(input[aria-disabled='true']) {
+  opacity: 0.7;
+}
+
+.select-counter.is-full {
+  color: var(--ink-soft);
+}
+
 .select-counter.is-over {
   color: var(--danger);
 }
