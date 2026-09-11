@@ -1,12 +1,44 @@
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { FastifyInstance } from 'fastify';
-import { afterAll, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, describe, expect, it, vi } from 'vitest';
 import { buildApp } from '../../server/app';
-import { ensureSeed } from '../../server/seed';
+import { ensureSeed, resolveConfigsDir } from '../../server/seed';
 import type { HistoryResponse, VersionsResponse } from '../../shared/api';
 import { loadRawConfig } from '../helpers/configs';
 
 const configsDir = fileURLToPath(new URL('../../configs', import.meta.url));
+const repoDir = fileURLToPath(new URL('../..', import.meta.url));
+
+describe('resolveConfigsDir', () => {
+  let root: string | undefined;
+  afterEach(() => {
+    if (root) rmSync(root, { recursive: true, force: true });
+    root = undefined;
+  });
+
+  it('finds configs/ beside the bundle directory, whatever the working directory is', () => {
+    root = mkdtempSync(join(tmpdir(), 'configs-dir-'));
+    mkdirSync(join(root, 'dist'));
+    mkdirSync(join(root, 'configs'));
+    writeFileSync(join(root, 'configs', 'funnel-v1.json'), '{}');
+    expect(resolveConfigsDir(join(root, 'dist'), '/somewhere/else')).toBe(join(root, 'configs'));
+  });
+
+  it('falls back to the working directory when there is no configs/ beside the bundle', () => {
+    root = mkdtempSync(join(tmpdir(), 'configs-dir-'));
+    mkdirSync(join(root, 'dist'));
+    expect(resolveConfigsDir(join(root, 'dist'), '/srv/app')).toBe(join('/srv/app', 'configs'));
+  });
+
+  it('resolves this repository’s configs/ from dist/ (bundle) and server/ (tsx)', () => {
+    for (const here of [join(repoDir, 'dist'), join(repoDir, 'server')]) {
+      expect(resolveConfigsDir(here, '/nowhere')).toBe(configsDir);
+    }
+  });
+});
 
 const versionsOf = async (app: FastifyInstance, headers: Record<string, string> = {}) =>
   (await app.inject({ method: 'GET', url: '/api/admin/versions', headers })).json() as VersionsResponse;

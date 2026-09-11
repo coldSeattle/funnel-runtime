@@ -1,9 +1,19 @@
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { FastifyInstance } from 'fastify';
 import { errorMessage, runIteration2Check, type Iteration2Recovery, type Iteration2Result } from '../scripts/iteration2/check';
 import { generateTraffic } from '../scripts/traffic/generator';
 import { injectTransport } from '../scripts/traffic/transport';
+
+/**
+ * configs/ sits beside the code's directory: dist/../configs for the bundle, server/../configs
+ * under tsx. Resolving it from there lets the server start from any working directory; the
+ * working directory's configs/ is only the fallback.
+ */
+export function resolveConfigsDir(here: string, cwd: string = process.cwd()): string {
+  const beside = join(here, '..', 'configs');
+  return existsSync(join(beside, 'funnel-v1.json')) ? beside : join(cwd, 'configs');
+}
 
 export interface SeedOptions {
   /** Directory that holds funnel-v1.json */
