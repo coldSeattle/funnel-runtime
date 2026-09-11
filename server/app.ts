@@ -1,4 +1,4 @@
-import Fastify, { type FastifyInstance } from 'fastify';
+import Fastify, { LogController, type FastifyInstance } from 'fastify';
 import fastifyStatic from '@fastify/static';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
@@ -19,7 +19,12 @@ export interface AppOptions {
   /** Directory with the built web app; served with SPA fallback when it exists */
   staticDir?: string | null;
   logger?: boolean;
+  /** Log destination at info level (tests capture lines with it); implies logging */
+  logStream?: { write(line: string): void };
 }
+
+/** Set by the in-process traffic generator; such requests are not logged one by one. */
+const SYNTHETIC_TRAFFIC_HEADER = 'x-synthetic-traffic';
 
 export interface AppContext {
   db: Db;
@@ -34,7 +39,17 @@ declare module 'fastify' {
 }
 
 export function buildApp(opts: AppOptions = {}): FastifyInstance {
-  const app = Fastify({ logger: opts.logger ?? false });
+  const app = Fastify({
+    logger: opts.logStream ? { level: 'info', stream: opts.logStream } : (opts.logger ?? false),
+    // Fastify's own incoming/completed pair is replaced by the single onResponse line below.
+    // (The top-level `disableRequestLogging` option is deprecated in Fastify 5.12.)
+    logController: new LogController({ disableRequestLogging: true }),
+  });
+  // SEED_ON_BOOT pushes ~4,000 generator requests through inject; one line each would bury the log.
+  app.addHook('onResponse', async (req, reply) => {
+    if (req.headers[SYNTHETIC_TRAFFIC_HEADER] === '1') return;
+    req.log.info({ method: req.method, url: req.url, statusCode: reply.statusCode, ms: Math.round(reply.elapsedTime) }, 'request');
+  });
   const db = openDb(opts.dbPath ?? ':memory:');
   app.decorate('ctx', { db, adminToken: opts.adminToken ?? null, services: createServices(db) });
   app.addHook('onClose', async () => {
