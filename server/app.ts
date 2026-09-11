@@ -7,6 +7,7 @@ import { HttpError } from './errors';
 import { createServices, type Services } from './services';
 import { adminRoutes } from './routes/admin';
 import { healthRoutes } from './routes/health';
+import { sessionRoutes } from './routes/sessions';
 
 export interface AppOptions {
   /** SQLite file path; ':memory:' (default) for tests */
@@ -54,6 +55,7 @@ export function buildApp(opts: AppOptions = {}): FastifyInstance {
   });
 
   app.register(healthRoutes, { prefix: '/api' });
+  app.register(sessionRoutes, { prefix: '/api' });
   app.register(adminRoutes, { prefix: '/api/admin' });
 
   const staticDir = opts.staticDir ?? null;
