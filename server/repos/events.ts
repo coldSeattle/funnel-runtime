@@ -78,9 +78,11 @@ export function createEventsRepo(db: Db): EventsRepo {
         params.push(filters.utmCampaign);
       }
       if (filters.excludeOverrides) where.push("assignment_source <> 'override'");
+      // rowid order = insertion order, the final tie-break for events with identical timestamps.
       const sql =
         `SELECT session_id, name, step_id, client_timestamp, server_timestamp, variant, funnel_version FROM events` +
-        (where.length ? ` WHERE ${where.join(' AND ')}` : '');
+        (where.length ? ` WHERE ${where.join(' AND ')}` : '') +
+        ' ORDER BY rowid ASC';
       return db.prepare(sql).all(...params) as AnalyticsEventRow[];
     },
 
