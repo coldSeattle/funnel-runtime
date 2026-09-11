@@ -12,5 +12,7 @@ sections of `docs/design.md` referenced in your task. Rules:
 - Tests first for every route and service (`buildApp({ dbPath: ':memory:' })` + `app.inject`).
 - Run `npx vitest run tests/server tests/analytics` and `npx tsc -p tsconfig.server.json`
   before reporting. Report exact command output, not a summary.
-- Commit on your own branch in your worktree with clear messages; never push, never merge.
+- Commit on your own branch in your worktree with clear messages, using the repository's default
+  git identity (no `--author`, no `-c user.*`) and no `Co-Authored-By` / `Claude-Session` /
+  "Generated with" lines; never push, never merge.
 - Report: files created, what each does, deviations from the design doc (if any), open questions.

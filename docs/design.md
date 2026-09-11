@@ -124,6 +124,12 @@ events           (event_id PK, session_id, name, client_timestamp, server_timest
 
 `SessionDto`: `{ id, funnelId, version, variant, experimentId, assignmentSource, utm: {source, medium, campaign}, answers, currentStepId, resultId, createdAt, expiresAt }`.
 
+Ответы publish и rollback: `{ activeVersion, fromVersion }` (`ActivationResponse`), upload — `{ version }`.
+Коды ошибок: 400 `invalid_body` / `invalid_config` (details — issues Zod) / `unknown_answer` / `invalid_answer` /
+`unknown_step` / `invalid_filter` / `batch_too_large`; 401 `unauthorized`; 404 `session_not_found` /
+`version_not_found`; 409 `version_exists` / `funnel_mismatch` / `already_active` / `nothing_to_rollback`;
+410 `session_expired`; 503 `no_active_version`. POST с `content-type: application/json` и пустым телом допустим.
+
 Если задан `ADMIN_TOKEN`, маршруты `/api/admin/*` требуют заголовок `x-admin-token`. По умолчанию не задан, чтобы проверяющие могли жать Publish / Rollback.
 
 ## 6. Сессии, версии, A/B
@@ -300,4 +306,7 @@ StepRow = { stepId, type, reached, reachRate, completed, completionRate, exits, 
 - Одна воронка (`funnel_id` из конфига); схема БД допускает несколько, UI — нет.
 - Условия `visibleWhen` могут ссылаться только на предыдущие шаги последовательности.
 - Админка открыта, если не задан `ADMIN_TOKEN`.
+- События истёкшей сессии принимаются: очередь трекера и `sendBeacon` могут досылать их позже TTL;
+  TTL ограничивает продолжение воронки, а не приём аналитики.
+- Пустая база на старте всегда получает опубликованную v1; синтетический трафик — только при `SEED_ON_BOOT=1`.
 - Free-хостинг: холодный старт до ~1 мин, данные сбрасываются при рестарте (см. §12).

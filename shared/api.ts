@@ -109,6 +109,17 @@ export interface HistoryResponse {
   history: HistoryEntry[];
 }
 
+/** POST /api/admin/versions → 201 */
+export interface UploadVersionResponse {
+  version: number;
+}
+
+/** POST /api/admin/versions/:version/publish and POST /api/admin/rollback → 200 */
+export interface ActivationResponse {
+  activeVersion: number;
+  fromVersion: number | null;
+}
+
 export interface AnalyticsFilters {
   version?: number;
   variant?: string;
