@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { IncomingEvent } from '../../shared/api';
-import { createTracker, type TrackerStorage } from '../../web/tracker/core';
+import { adoptOrphanQueues, createTracker, type KeyValueStore, type TrackerStorage } from '../../web/tracker/core';
 import { allowedEvents } from '../../shared/engine';
 import { loadConfig } from '../helpers/configs';
 
@@ -15,6 +15,39 @@ function memoryStorage(): TrackerStorage & { value: string | null } {
     set(next: string) {
       this.value = next;
     },
+  };
+}
+
+/** A localStorage stand-in: a map of keys, plus a per-key TrackerStorage view like browser.ts builds. */
+function memoryStore(initial: Record<string, string> = {}) {
+  const data = new Map(Object.entries(initial));
+  const store: KeyValueStore = {
+    keys: () => [...data.keys()],
+    get: (key) => data.get(key) ?? null,
+    remove: (key) => {
+      data.delete(key);
+    },
+  };
+  const queue = (key: string): TrackerStorage => ({
+    get: () => data.get(key) ?? null,
+    set: (value) => {
+      data.set(key, value);
+    },
+    remove: () => {
+      data.delete(key);
+    },
+  });
+  return { data, store, queue };
+}
+
+function queued(eventId: string, sessionId: string, name = 'cta_clicked'): IncomingEvent {
+  return {
+    event_id: eventId,
+    session_id: sessionId,
+    name,
+    client_timestamp: '2026-09-08T10:00:00.000Z',
+    step_id: 'result',
+    properties: { result_id: 'balanced', action: 'expand_recommendation' },
   };
 }
 
@@ -184,6 +217,18 @@ describe('createTracker', () => {
     expect(send.mock.calls[0]![0][0]!.event_id).toBe('old-1');
   });
 
+  it('removes its storage key once the queue is drained', async () => {
+    const send = vi.fn(async (_events: IncomingEvent[]) => true);
+    const { data, queue } = memoryStore();
+    const tracker = createTracker({ sessionId: 's1', allowed, send, storage: queue('fr.queue.s1'), ...fixtures() });
+
+    tracker.track('step_viewed', { stepId: 'intro', properties: { step_type: 'info' } });
+    expect(data.has('fr.queue.s1')).toBe(true);
+
+    await tracker.flush();
+    expect(data.has('fr.queue.s1')).toBe(false);
+  });
+
   it('stops queueing after dispose', async () => {
     const send = vi.fn(async (_events: IncomingEvent[]) => true);
     const tracker = createTracker({ sessionId: 's1', allowed, send, ...fixtures() });
@@ -193,5 +238,96 @@ describe('createTracker', () => {
     await vi.advanceTimersByTimeAsync(5000);
     expect(tracker.pending()).toBe(0);
     expect(send).not.toHaveBeenCalled();
+  });
+});
+
+describe('adoptOrphanQueues', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('delivers events left in another session queue under their own session_id', async () => {
+    const send = vi.fn(async (_events: IncomingEvent[]) => true);
+    const { data, store, queue } = memoryStore({
+      'fr.sessionId': 'new',
+      'fr.queue.old': JSON.stringify([queued('orphan-1', 'old')]),
+    });
+    const tracker = createTracker({ sessionId: 'new', allowed, send, storage: queue('fr.queue.new'), ...fixtures() });
+
+    expect(adoptOrphanQueues({ tracker, store, prefix: 'fr.queue.', ownKey: 'fr.queue.new' })).toBe(1);
+    // Moved, not dropped: the orphan key goes only because the live queue now stores the event.
+    expect(data.has('fr.queue.old')).toBe(false);
+    expect(JSON.parse(data.get('fr.queue.new') ?? '[]')).toEqual([queued('orphan-1', 'old')]);
+    expect(data.get('fr.sessionId')).toBe('new');
+
+    // Adoption schedules delivery by itself, no new track() needed.
+    await vi.advanceTimersByTimeAsync(800);
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(send.mock.calls[0]![0]).toEqual([queued('orphan-1', 'old')]);
+    expect(tracker.pending()).toBe(0);
+    expect(data.has('fr.queue.new')).toBe(false);
+  });
+
+  it('keeps adopted events queued with the same ids until a send succeeds', async () => {
+    const send = vi
+      .fn<(events: IncomingEvent[]) => Promise<boolean>>()
+      .mockResolvedValueOnce(false)
+      .mockResolvedValue(true);
+    const { data, store, queue } = memoryStore({ 'fr.queue.old': JSON.stringify([queued('orphan-1', 'old')]) });
+    const tracker = createTracker({ sessionId: 'new', allowed, send, storage: queue('fr.queue.new'), ...fixtures() });
+
+    adoptOrphanQueues({ tracker, store, prefix: 'fr.queue.', ownKey: 'fr.queue.new' });
+    tracker.track('step_viewed', { stepId: 'intro', properties: { step_type: 'info' } });
+
+    await vi.advanceTimersByTimeAsync(800);
+    expect(send).toHaveBeenCalledTimes(1);
+    // Older adopted events go first; the failed batch stays in storage.
+    expect(send.mock.calls[0]![0].map((e) => e.event_id)).toEqual(['orphan-1', 'evt-1']);
+    expect(JSON.parse(data.get('fr.queue.new') ?? '[]')).toHaveLength(2);
+
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(send).toHaveBeenCalledTimes(2);
+    expect(send.mock.calls[1]![0].map((e) => e.event_id)).toEqual(['orphan-1', 'evt-1']);
+    expect(data.has('fr.queue.new')).toBe(false);
+  });
+
+  it('leaves the orphan key in place when the live queue cannot be stored', async () => {
+    const send = vi.fn(async (_events: IncomingEvent[]) => true);
+    const { data, store } = memoryStore({ 'fr.queue.old': JSON.stringify([queued('orphan-1', 'old')]) });
+    const full: TrackerStorage = {
+      get: () => null,
+      set: () => {
+        throw new Error('QuotaExceededError');
+      },
+    };
+    const tracker = createTracker({ sessionId: 'new', allowed, send, storage: full, ...fixtures() });
+
+    adoptOrphanQueues({ tracker, store, prefix: 'fr.queue.', ownKey: 'fr.queue.new' });
+    expect(data.has('fr.queue.old')).toBe(true);
+
+    // Still sent from memory; a later start re-adopting it only produces a server-side duplicate.
+    await tracker.flush();
+    expect(send.mock.calls[0]![0][0]!.event_id).toBe('orphan-1');
+  });
+
+  it('skips its own key, merges several orphans without duplicates and clears dead keys', () => {
+    const send = vi.fn(async (_events: IncomingEvent[]) => true);
+    const { data, store, queue } = memoryStore({
+      'fr.queue.new': JSON.stringify([queued('own-1', 'new', 'step_viewed')]),
+      'fr.queue.a': JSON.stringify([queued('a-1', 'a'), queued('shared-1', 'a')]),
+      'fr.queue.b': JSON.stringify([queued('shared-1', 'a'), queued('b-1', 'b')]),
+      'fr.queue.empty': '[]',
+      'fr.queue.junk': '{not json',
+      'fr.adminToken': 'secret',
+    });
+    const tracker = createTracker({ sessionId: 'new', allowed, send, storage: queue('fr.queue.new'), ...fixtures() });
+
+    expect(adoptOrphanQueues({ tracker, store, prefix: 'fr.queue.', ownKey: 'fr.queue.new' })).toBe(4);
+    expect(tracker.snapshot().map((e) => e.event_id)).toEqual(['a-1', 'shared-1', 'b-1', 'own-1']);
+    expect([...data.keys()].sort()).toEqual(['fr.adminToken', 'fr.queue.new']);
   });
 });

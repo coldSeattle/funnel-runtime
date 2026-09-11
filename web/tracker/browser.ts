@@ -1,12 +1,15 @@
 // Browser wiring for the tracker core: fetch transport, localStorage queue, beacon on page hide.
 import type { IncomingEvent, IngestRequest } from '../../shared/api';
-import { createTracker, type Tracker, type TrackerStorage } from './core';
+import { adoptOrphanQueues, createTracker, type KeyValueStore, type Tracker, type TrackerStorage } from './core';
 
 const EVENTS_URL = '/api/events';
 const QUEUE_KEY_PREFIX = 'fr.queue.';
 
 export interface BrowserTracker extends Tracker {
-  /** Registers pagehide/visibility listeners and returns the remover (safe to call repeatedly). */
+  /**
+   * Adopts queues left by earlier sessions, registers pagehide/visibility listeners and returns
+   * the remover, which flushes before detaching (safe to call repeatedly).
+   */
   attach(): () => void;
 }
 
@@ -16,11 +19,12 @@ export interface BrowserTrackerOptions {
 }
 
 export function createBrowserTracker({ sessionId, allowed }: BrowserTrackerOptions): BrowserTracker {
+  const ownKey = QUEUE_KEY_PREFIX + sessionId;
   const tracker = createTracker({
     sessionId,
     allowed,
     send: postEvents,
-    storage: localStorageQueue(QUEUE_KEY_PREFIX + sessionId),
+    storage: localStorageQueue(ownKey),
     uuid: browserUuid,
   });
 
@@ -49,9 +53,14 @@ export function createBrowserTracker({ sessionId, allowed }: BrowserTrackerOptio
   return {
     ...tracker,
     attach(): () => void {
+      // Runs in an effect, not at construction, so render stays free of storage side effects.
+      adoptOrphanQueues({ tracker, store: localStorageKeys, prefix: QUEUE_KEY_PREFIX, ownKey });
       window.addEventListener('pagehide', onPageHide);
       document.addEventListener('visibilitychange', onVisibilityChange);
       return () => {
+        // The runner is unmounting (restart, session switch): send what is pending now, since the
+        // listeners that would beacon it on page hide are about to go.
+        void tracker.flush();
         window.removeEventListener('pagehide', onPageHide);
         document.removeEventListener('visibilitychange', onVisibilityChange);
       };
@@ -74,6 +83,7 @@ async function postEvents(events: IncomingEvent[]): Promise<boolean> {
   }
 }
 
+/** `set` and `remove` may throw; the core catches that and keeps the queue in memory. */
 function localStorageQueue(key: string): TrackerStorage {
   return {
     get() {
@@ -84,14 +94,26 @@ function localStorageQueue(key: string): TrackerStorage {
       }
     },
     set(value: string) {
-      try {
-        window.localStorage.setItem(key, value);
-      } catch {
-        // Ignored: the in-memory queue keeps working without persistence.
-      }
+      window.localStorage.setItem(key, value);
+    },
+    remove() {
+      window.localStorage.removeItem(key);
     },
   };
 }
+
+const localStorageKeys: KeyValueStore = {
+  keys() {
+    const keys: string[] = [];
+    for (let i = 0; i < window.localStorage.length; i++) {
+      const key = window.localStorage.key(i);
+      if (key !== null) keys.push(key);
+    }
+    return keys;
+  },
+  get: (key) => window.localStorage.getItem(key),
+  remove: (key) => window.localStorage.removeItem(key),
+};
 
 function browserUuid(): string {
   try {
