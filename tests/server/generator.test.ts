@@ -159,7 +159,10 @@ describe('generateTraffic on v1', () => {
       // Those counters are the generator's own; what the server answered and stored shows the
       // noise really landed.
       const { noise } = summary;
-      if (noise.duplicateInBatch + noise.resendBatch > 0) expect(summary.duplicates).toBeGreaterThan(0);
+      // Duplicates are answered but never stored: the table holds exactly what was accepted, plus the
+      // one session_started the server writes per session.
+      const stored = app.ctx.db.prepare('SELECT COUNT(*) AS n FROM events').get() as { n: number };
+      expect(stored.n).toBe(summary.accepted + summary.sessions);
       expect(summary.rejected).toBeGreaterThanOrEqual(noise.invalidEvent + noise.unknownEvent);
       expect(sessionsStoredOutOfOrder(app)).toBe(noise.shuffled);
 
