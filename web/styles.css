@@ -696,7 +696,7 @@ button {
   background: var(--surface-sunk);
   border: 1px solid var(--line);
   border-radius: var(--radius);
-  animation: step-in 260ms cubic-bezier(0.22, 0.61, 0.36, 1) both;
+  animation: rise-in 260ms cubic-bezier(0.22, 0.61, 0.36, 1) both;
 }
 
 .recommendations-title {
@@ -717,7 +717,7 @@ button {
 }
 
 .recommendation-list li {
-  animation: step-in 300ms cubic-bezier(0.22, 0.61, 0.36, 1) both;
+  animation: rise-in 300ms cubic-bezier(0.22, 0.61, 0.36, 1) both;
 }
 
 /* ---------- admin: shared ---------- */

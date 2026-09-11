@@ -3,6 +3,7 @@ import { StepHeader } from './StepHeader';
 
 export interface NumberStepProps {
   step: Step;
+  /** Raw text as typed; validateAnswer parses it and words the error. */
   value: string;
   onChange: (value: string) => void;
   onSubmit: () => void;
@@ -12,6 +13,11 @@ export interface NumberStepProps {
   errorId: string;
 }
 
+/**
+ * A text input with a numeric keyboard, not type="number": a number input reports "" for text it
+ * cannot parse, so the field would show "abc" while the draft said "empty" and the error said
+ * "required". Here the draft is exactly what is on screen.
+ */
 export function NumberStep({ step, value, onChange, onSubmit, busy, invalid, errorId }: NumberStepProps) {
   const input = step.input;
   const inputId = `field-${step.id}`;
@@ -19,6 +25,9 @@ export function NumberStep({ step, value, onChange, onSubmit, busy, invalid, err
   const range =
     input?.min !== undefined && input.max !== undefined ? `${input.min}–${input.max}${input.unit ? ` ${input.unit}` : ''}` : null;
   const describedBy = [range ? hintId : null, invalid ? errorId : null].filter(Boolean).join(' ');
+  // Phone keypads for "numeric" have no minus or decimal separator.
+  const inputMode =
+    input?.min !== undefined && input.min < 0 ? 'text' : Number.isInteger(input?.step ?? Number.NaN) ? 'numeric' : 'decimal';
 
   return (
     <div className="step step-number">
@@ -26,14 +35,13 @@ export function NumberStep({ step, value, onChange, onSubmit, busy, invalid, err
       <div className={`number-field${invalid ? ' is-invalid' : ''}`}>
         <input
           id={inputId}
-          type="number"
-          inputMode="numeric"
+          type="text"
+          inputMode={inputMode}
+          enterKeyHint="next"
           autoComplete="off"
+          spellCheck={false}
           className="number-input"
           value={value}
-          min={input?.min}
-          max={input?.max}
-          step={input?.step}
           readOnly={busy}
           aria-disabled={busy || undefined}
           aria-label={step.content.title}

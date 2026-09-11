@@ -19,11 +19,16 @@ type ResultState =
   | { status: 'ready'; result: ResultDef }
   | { status: 'error'; message: string };
 
+const ACTION_LIST_ID = 'result-action-list';
+
+// Copy that is not in the config stays neutral: variant framing (e.g. B's "30-day" wording) must
+// come from the config only, or it would leak into the other arm of the experiment.
 export function ResultStep({ step, sessionId, allowed, track, onRestart, onStatusChange }: ResultStepProps) {
   const [state, setState] = useState<ResultState>({ status: 'loading' });
   const [attempt, setAttempt] = useState(0);
   const [expanded, setExpanded] = useState(false);
   const startedRef = useRef(-1);
+  const ctaTrackedRef = useRef(false);
 
   useEffect(() => {
     if (startedRef.current === attempt) return; // StrictMode double effect
@@ -48,10 +53,17 @@ export function ResultStep({ step, sessionId, allowed, track, onRestart, onStatu
     // Only the status matters: each status renders a fresh subtree (see the keys below).
   }, [state.status]);
 
+  /** The first click is the conversion and is tracked once; later clicks only show or hide the list. */
   function handleCta(result: ResultDef): void {
     const action = result.cta.action;
+    const expands = action === 'expand_recommendation';
+    if (ctaTrackedRef.current) {
+      if (expands) setExpanded((open) => !open);
+      return;
+    }
+    ctaTrackedRef.current = true;
     track('cta_clicked', { stepId: step.id, properties: { result_id: result.id, action } });
-    if (action !== 'expand_recommendation') return;
+    if (!expands) return;
     setExpanded(true);
     if (allowed.has('recommendation_expanded')) {
       track('recommendation_expanded', {
@@ -90,6 +102,7 @@ export function ResultStep({ step, sessionId, allowed, track, onRestart, onStatu
   }
 
   const { result } = state;
+  const expands = result.cta.action === 'expand_recommendation';
   return (
     <div key="ready" className="step step-result">
       <p className="eyebrow">Your recommendation</p>
@@ -98,13 +111,21 @@ export function ResultStep({ step, sessionId, allowed, track, onRestart, onStatu
       </h1>
       <p className="result-summary">{result.summary}</p>
 
-      <button type="button" className="button button-primary" onClick={() => handleCta(result)}>
-        {result.cta.label}
+      <button
+        type="button"
+        className="button button-primary"
+        aria-expanded={expands ? expanded : undefined}
+        aria-controls={expands && expanded ? ACTION_LIST_ID : undefined}
+        onClick={() => handleCta(result)}
+      >
+        {expands && expanded ? 'Hide the action list' : result.cta.label}
       </button>
 
       {expanded ? (
-        <section className="recommendations" aria-label="Action list">
-          <h2 className="recommendations-title">What to do in the next 30 days</h2>
+        <section className="recommendations" id={ACTION_LIST_ID} aria-labelledby={`${ACTION_LIST_ID}-title`}>
+          <h2 className="recommendations-title" id={`${ACTION_LIST_ID}-title`}>
+            Your action list
+          </h2>
           <ol className="recommendation-list">
             {result.recommendations.map((item, index) => (
               <li key={item} style={{ animationDelay: `${index * 60}ms` }}>
