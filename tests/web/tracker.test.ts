@@ -200,6 +200,71 @@ describe('createTracker', () => {
     expect(send.mock.calls[1]![0].map((event) => event.event_id)).toEqual(['evt-1', 'evt-2', 'evt-3']);
   });
 
+  it('waits the full doubled backoff when the batch fills up while a retry is in flight', async () => {
+    let settleRetry: (ok: boolean) => void = () => undefined;
+    const send = vi
+      .fn<(events: IncomingEvent[]) => Promise<boolean>>()
+      .mockResolvedValueOnce(false)
+      .mockImplementationOnce(
+        () =>
+          new Promise<boolean>((resolve) => {
+            settleRetry = resolve;
+          }),
+      )
+      .mockResolvedValue(true);
+    const tracker = createTracker({ sessionId: 's1', allowed, send, batchSize: 3, ...fixtures() });
+
+    tracker.track('step_viewed', { properties: { step_type: 'info' } });
+    await vi.advanceTimersByTimeAsync(800); // attempt 1 fails: backoff 1 s
+    await vi.advanceTimersByTimeAsync(1000); // retry #1 starts and stays pending
+    expect(send).toHaveBeenCalledTimes(2);
+
+    tracker.track('step_viewed', { properties: { step_type: 'info' } });
+    tracker.track('step_viewed', { properties: { step_type: 'info' } }); // batchSize reached mid-flight
+    await vi.advanceTimersByTimeAsync(100);
+    expect(send).toHaveBeenCalledTimes(2);
+
+    settleRetry(false); // second failure: the next attempt is due 2 s from here
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(1999);
+    expect(send).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(send).toHaveBeenCalledTimes(3);
+    expect(send.mock.calls[2]![0].map((event) => event.event_id)).toEqual(['evt-1', 'evt-2', 'evt-3']);
+  });
+
+  it('sends events tracked during a healthy in-flight send one batch delay after it succeeds', async () => {
+    let settleFirst: (ok: boolean) => void = () => undefined;
+    const send = vi
+      .fn<(events: IncomingEvent[]) => Promise<boolean>>()
+      .mockImplementationOnce(
+        () =>
+          new Promise<boolean>((resolve) => {
+            settleFirst = resolve;
+          }),
+      )
+      .mockResolvedValue(true);
+    const tracker = createTracker({ sessionId: 's1', allowed, send, ...fixtures() });
+
+    tracker.track('step_viewed', { properties: { step_type: 'info' } });
+    await vi.advanceTimersByTimeAsync(800);
+    expect(send).toHaveBeenCalledTimes(1);
+
+    tracker.track('step_viewed', { properties: { step_type: 'info' } });
+    await vi.advanceTimersByTimeAsync(1500); // the first send is still pending
+    expect(send).toHaveBeenCalledTimes(1);
+
+    settleFirst(true);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(tracker.pending()).toBe(1);
+    await vi.advanceTimersByTimeAsync(799);
+    expect(send).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(send).toHaveBeenCalledTimes(2);
+    expect(send.mock.calls[1]![0].map((event) => event.event_id)).toEqual(['evt-2']);
+    expect(tracker.pending()).toBe(0);
+  });
+
   it('still sends a full batch at once when no retry is pending', async () => {
     const send = vi
       .fn<(events: IncomingEvent[]) => Promise<boolean>>()

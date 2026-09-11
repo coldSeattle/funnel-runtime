@@ -153,10 +153,12 @@ export function createTracker(options: TrackerOptions): Tracker {
       persist();
       // A full batch only skips the normal batch delay. While a failed send is backing off, the
       // pending retry timer stays in charge, otherwise a busy page would hammer a failing server.
+      // No timer while a send is in flight: deliver() reschedules when it settles, and a batch
+      // timer set now would pre-empt the backoff that a failure of that send asks for.
       if (queue.length >= batchSize && failures === 0) {
         clearTimer();
         void flush();
-      } else {
+      } else if (!inFlight) {
         schedule(batchDelayMs);
       }
     },
