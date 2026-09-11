@@ -265,6 +265,42 @@ describe('createTracker', () => {
     expect(tracker.pending()).toBe(0);
   });
 
+  // The gap between a successful send resolving and flush() clearing inFlight is a few
+  // microtasks long; an event tracked there must not wait for the next track() or pagehide.
+  it.each([0, 1, 2, 3, 4, 6, 8])(
+    'sends an event tracked %i microtasks after a successful send one batch delay later',
+    async (depth) => {
+      let settleFirst: (ok: boolean) => void = () => undefined;
+      const firstSend = new Promise<boolean>((resolve) => {
+        settleFirst = resolve;
+      });
+      const send = vi
+        .fn<(events: IncomingEvent[]) => Promise<boolean>>()
+        .mockReturnValueOnce(firstSend)
+        .mockResolvedValue(true);
+      const tracker = createTracker({ sessionId: 's1', allowed, send, ...fixtures() });
+
+      tracker.track('step_viewed', { properties: { step_type: 'info' } });
+      await vi.advanceTimersByTimeAsync(800);
+      expect(send).toHaveBeenCalledTimes(1);
+
+      // Registered after deliver() awaits the send, so it runs right after deliver() resumes.
+      let chain: Promise<unknown> = firstSend;
+      for (let i = 0; i < depth; i++) chain = chain.then(() => undefined);
+      void chain.then(() => tracker.track('cta_clicked', { properties: { result_id: 'balanced' } }));
+
+      settleFirst(true);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(tracker.pending()).toBe(1);
+      await vi.advanceTimersByTimeAsync(799);
+      expect(send).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(send).toHaveBeenCalledTimes(2);
+      expect(send.mock.calls[1]![0].map((event) => event.name)).toEqual(['cta_clicked']);
+      expect(tracker.pending()).toBe(0);
+    },
+  );
+
   it('still sends a full batch at once when no retry is pending', async () => {
     const send = vi
       .fn<(events: IncomingEvent[]) => Promise<boolean>>()

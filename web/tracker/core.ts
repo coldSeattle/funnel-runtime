@@ -128,10 +128,13 @@ export function createTracker(options: TrackerOptions): Tracker {
     if (queue.length === 0) return Promise.resolve();
     clearTimer();
     const batch = queue.slice(0, batchSize);
+    // An event tracked after deliver() has settled but before inFlight clears sees a send in
+    // flight and schedules nothing, so pick it up here. A backoff timer, if set, is kept.
     const run = deliver(batch)
       .catch(() => undefined)
       .then(() => {
         inFlight = null;
+        if (queue.length > 0) schedule(batchDelayMs);
       });
     inFlight = run;
     return run;
@@ -153,7 +156,7 @@ export function createTracker(options: TrackerOptions): Tracker {
       persist();
       // A full batch only skips the normal batch delay. While a failed send is backing off, the
       // pending retry timer stays in charge, otherwise a busy page would hammer a failing server.
-      // No timer while a send is in flight: deliver() reschedules when it settles, and a batch
+      // No timer while a send is in flight: flush() reschedules when it settles, and a batch
       // timer set now would pre-empt the backoff that a failure of that send asks for.
       if (queue.length >= batchSize && failures === 0) {
         clearTimer();
