@@ -24,8 +24,9 @@
   --shadow-sm: 0 1px 2px rgba(20, 32, 27, 0.06);
   --shadow: 0 18px 40px -26px rgba(20, 32, 27, 0.55);
 
-  --font-display: 'Fraunces', Georgia, 'Times New Roman', serif;
-  --font-sans: 'Plus Jakarta Sans', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  /* Self-hosted via @fontsource-variable (imported in main.tsx); a locally installed static copy is the next fallback. */
+  --font-display: 'Fraunces Variable', 'Fraunces', Georgia, 'Times New Roman', serif;
+  --font-sans: 'Plus Jakarta Sans Variable', 'Plus Jakarta Sans', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
 
   --step-1: 0.8125rem;
   --step-2: 0.9375rem;

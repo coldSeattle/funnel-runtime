@@ -1,3 +1,7 @@
+// Self-hosted variable fonts (no third-party font CDN). Upright only: the UI uses no italics.
+// Fraunces keeps its optical-size axis, as the old Google Fonts link requested it.
+import '@fontsource-variable/fraunces/opsz.css';
+import '@fontsource-variable/plus-jakarta-sans/wght.css';
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { BrowserRouter, Link, Route, Routes } from 'react-router';
