@@ -4,6 +4,8 @@ import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { openDb, type Db } from './db';
 import { HttpError } from './errors';
+import { createServices, type Services } from './services';
+import { adminRoutes } from './routes/admin';
 import { healthRoutes } from './routes/health';
 
 export interface AppOptions {
@@ -19,6 +21,7 @@ export interface AppOptions {
 export interface AppContext {
   db: Db;
   adminToken: string | null;
+  services: Services;
 }
 
 declare module 'fastify' {
@@ -30,7 +33,7 @@ declare module 'fastify' {
 export function buildApp(opts: AppOptions = {}): FastifyInstance {
   const app = Fastify({ logger: opts.logger ?? false });
   const db = openDb(opts.dbPath ?? ':memory:');
-  app.decorate('ctx', { db, adminToken: opts.adminToken ?? null });
+  app.decorate('ctx', { db, adminToken: opts.adminToken ?? null, services: createServices(db) });
   app.addHook('onClose', async () => {
     db.close();
   });
@@ -51,6 +54,7 @@ export function buildApp(opts: AppOptions = {}): FastifyInstance {
   });
 
   app.register(healthRoutes, { prefix: '/api' });
+  app.register(adminRoutes, { prefix: '/api/admin' });
 
   const staticDir = opts.staticDir ?? null;
   const serveStatic = staticDir !== null && existsSync(join(staticDir, 'index.html'));
