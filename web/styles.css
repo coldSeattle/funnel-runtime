@@ -1010,7 +1010,13 @@ html:has(.admin) {
   font-weight: 600;
 }
 
+/*
+ * position: relative makes the wrapper the containing block of absolutely positioned descendants
+ * (the .sr-only caption and "Actions" header). Without it they escape the overflow clip and
+ * widened the whole Versions page to the table's width on phones.
+ */
 .table-wrap {
+  position: relative;
   overflow-x: auto;
   background: var(--surface);
   border: 1px solid var(--line);
