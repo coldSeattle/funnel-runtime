@@ -30,6 +30,30 @@ describe('error handler', () => {
     expect(res.body).not.toMatch(/sqlite/i);
   });
 
+  it.each(['/api/events', '/api/admin/versions'])('answers a body over the 1 MiB limit on %s with 413 payload_too_large', async (url) => {
+    const res = await app.inject({
+      method: 'POST',
+      url,
+      headers: { 'content-type': 'application/json' },
+      payload: JSON.stringify({ events: [], padding: 'x'.repeat(1024 * 1024) }),
+    });
+    expect(res.statusCode).toBe(413);
+    expect(res.json()).toEqual({
+      error: { code: 'payload_too_large', message: 'The request body is larger than the 1048576-byte limit' },
+    });
+  });
+
+  it.each([
+    ['/api/events', 'application/xml', '<events/>'],
+    ['/api/admin/versions', 'application/x-www-form-urlencoded', 'version=1'],
+  ])('answers POST %s with content-type %s with 415 unsupported_media_type', async (url, contentType, payload) => {
+    const res = await app.inject({ method: 'POST', url, headers: { 'content-type': contentType }, payload });
+    expect(res.statusCode).toBe(415);
+    expect(res.json()).toEqual({
+      error: { code: 'unsupported_media_type', message: 'Unsupported content type: send the body as application/json' },
+    });
+  });
+
   it('keeps the message of a deliberate 5xx HttpError', async () => {
     const res = await app.inject({ method: 'GET', url: '/api/test/unavailable' });
     expect(res.statusCode).toBe(503);

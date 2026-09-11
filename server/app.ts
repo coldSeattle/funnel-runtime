@@ -98,6 +98,14 @@ export function buildApp(opts: AppOptions = {}): FastifyInstance {
     if (isBodyParseFailure(err, status)) {
       return reply.status(400).send({ error: { code: 'invalid_body', message: 'The request body is not valid JSON' } });
     }
+    if (status === 413) {
+      const message = `The request body is larger than the ${app.initialConfig.bodyLimit}-byte limit`;
+      return reply.status(413).send({ error: { code: 'payload_too_large', message } });
+    }
+    if (status === 415) {
+      const message = 'Unsupported content type: send the body as application/json';
+      return reply.status(415).send({ error: { code: 'unsupported_media_type', message } });
+    }
     return reply.status(status).send({
       error: {
         code: status === 400 ? 'bad_request' : 'error',
