@@ -17,6 +17,68 @@ describe('sessions without an active version', () => {
   });
 });
 
+describe('session create body validation', () => {
+  const app = buildApp();
+  const sessionCount = () => (app.ctx.db.prepare('SELECT COUNT(*) AS n FROM sessions').get() as { n: number }).n;
+
+  beforeAll(async () => {
+    await app.inject({ method: 'POST', url: '/api/admin/versions', payload: loadRawConfig('funnel-v1.json') });
+    await app.inject({ method: 'POST', url: '/api/admin/versions/1/publish' });
+  });
+  afterAll(async () => {
+    await app.close();
+  });
+
+  it.each([
+    ['a non-string variantOverride', { variantOverride: ['B'] }],
+    ['a non-string query value', { query: { variant: ['B'] } }],
+    ['an object UTM field', { utm: { source: {} } }],
+    ['a numeric UTM field', { utm: { campaign: 42 } }],
+    ['a non-object utm', { utm: 'spring' }],
+    ['a non-string clientTimestamp', { clientTimestamp: 1757577600000 }],
+    ['an array body', [{ variantOverride: 'B' }]],
+  ])('400s invalid_body on %s without creating a session', async (_label, payload) => {
+    const before = sessionCount();
+    const res = await app.inject({ method: 'POST', url: '/api/sessions', payload: payload as object });
+    expect(res.statusCode).toBe(400);
+    const err = res.json().error;
+    expect(err.code).toBe('invalid_body');
+    expect(err.message).not.toMatch(/sqlite/i);
+    expect(Array.isArray(err.details)).toBe(true);
+    expect(err.details.length).toBeGreaterThan(0);
+    expect(sessionCount()).toBe(before);
+  });
+
+  it('keeps string UTM values identical across create, read and analytics options', async () => {
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/sessions',
+      payload: { utm: { source: null, campaign: '42' }, query: { utm_medium: 'cpc' } },
+    });
+    expect(res.statusCode).toBe(201);
+    const created = res.json() as SessionResponse;
+    expect(created.session.utm).toEqual({ source: null, medium: 'cpc', campaign: '42' });
+
+    const reread = (await app.inject({ method: 'GET', url: `/api/sessions/${created.session.id}` })).json() as SessionResponse;
+    expect(reread.session.utm).toEqual(created.session.utm);
+
+    // A numeric campaign used to be stored as REAL and read back as "42.0" next to the string "42".
+    const campaigns = (await app.inject({ method: 'GET', url: '/api/analytics' })).json().options.campaigns as string[];
+    expect(campaigns).toContain('42');
+    expect(campaigns).not.toContain('42.0');
+  });
+
+  it('still accepts a bodiless create sent with a JSON content-type', async () => {
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/sessions',
+      headers: { 'content-type': 'application/json' },
+    });
+    expect(res.statusCode).toBe(201);
+    expect((res.json() as SessionResponse).session.assignmentSource).toBe('server');
+  });
+});
+
 describe('sessions', () => {
   const app = buildApp();
   let v1SessionId = '';
