@@ -5,6 +5,7 @@ import { useSearchParams } from 'react-router';
 import type { AnalyticsFilters, AnalyticsResponse, StepRow, Totals } from '../../shared/api';
 import { ApiRequestError, getAnalytics, toApiError } from '../api';
 import { AdminLayout, TokenPrompt } from './AdminLayout';
+import { dashboardView, staleNote, type DashboardView } from './dashboardView';
 import {
   compareProportions,
   MIN_SUCCESSES,
@@ -60,9 +61,6 @@ function withSelected(options: string[], selected: string | undefined): string[]
   return selected && !options.includes(selected) ? [...options, selected] : options;
 }
 
-/** What the numbers on screen are: current, being replaced, or left over from a failed request. */
-type DashboardView = 'fresh' | 'refreshing' | 'stale';
-
 export function AnalyticsPage() {
   const [params, setParams] = useSearchParams();
   const paramsKey = params.toString();
@@ -70,29 +68,33 @@ export function AnalyticsPage() {
 
   // The last successful response, with the URL selection it was fetched for.
   const [loaded, setLoaded] = useState<{ data: AnalyticsResponse; key: string } | null>(null);
-  const [loading, setLoading] = useState(true);
   const [error, setError] = useState<ApiRequestError | null>(null);
   const [needsToken, setNeedsToken] = useState(false);
   const [reloadKey, setReloadKey] = useState(0);
+  // The request that settled last, successful or not. Loading is derived from it rather than set
+  // by the effect: the router applies URL changes in a transition, so a frame can be painted
+  // before the effect runs, and that frame must already read as loading, not as stale.
+  const [settled, setSettled] = useState<{ key: string; reload: number } | null>(null);
+  const loading = settled === null || settled.key !== paramsKey || settled.reload !== reloadKey;
 
   useEffect(() => {
     let active = true;
     const key = paramsKey;
-    setLoading(true);
+    const reload = reloadKey;
     getAnalytics(filters).then(
       (response) => {
         if (!active) return;
         setLoaded({ data: response, key });
         setError(null);
         setNeedsToken(false);
-        setLoading(false);
+        setSettled({ key, reload });
       },
       (failure: unknown) => {
         if (!active) return;
         const apiError = toApiError(failure);
         setError(apiError);
         setNeedsToken(apiError.isUnauthorized);
-        setLoading(false);
+        setSettled({ key, reload });
       },
     );
     return () => {
@@ -120,12 +122,10 @@ export function AnalyticsPage() {
   const variantOptions = withSelected(data?.options.variants ?? [], filters.variant);
   const campaignOptions = withSelected(data?.options.campaigns ?? [], filters.utmCampaign);
 
-  const failed = error !== null && !needsToken;
-  const view: DashboardView = failed ? 'stale' : loading ? 'refreshing' : 'fresh';
-  const staleNote =
-    loaded !== null && loaded.key !== paramsKey
-      ? 'Showing the previous selection — these numbers do not match the filters above.'
-      : 'Showing the last loaded numbers — they may be out of date.';
+  // A 401 gets the TokenPrompt instead of the error panel, but it leaves the numbers stale all the same.
+  const showErrorPanel = error !== null && !needsToken;
+  const shownKey = loaded?.key ?? null;
+  const view = dashboardView({ shownKey, currentKey: paramsKey, loading, failed: error !== null });
 
   return (
     <AdminLayout
@@ -203,7 +203,7 @@ export function AnalyticsPage() {
         ) : null}
       </form>
 
-      {failed ? (
+      {showErrorPanel ? (
         <div className="panel panel-row" role="alert">
           <p className="notice notice-error">{error.message}</p>
           <button type="button" className="btn" disabled={loading} onClick={refresh}>
@@ -214,7 +214,7 @@ export function AnalyticsPage() {
 
       {data ? (
         <>
-          {view === 'stale' ? <p className="stale-note">{staleNote}</p> : null}
+          {view === 'stale' ? <p className="stale-note">{staleNote(shownKey, paramsKey)}</p> : null}
           <Dashboard
             data={data}
             view={view}
@@ -246,7 +246,7 @@ function Dashboard({ data, view, onExcludeOverrides }: DashboardProps) {
 
   return (
     // Refetches keep the previous numbers on screen, dimmed, instead of flashing a loader; after a
-    // failed refetch they stay dimmed further, under the "previous selection" note.
+    // failed refetch (a 401 included) they stay dimmed further, under the stale note.
     <div className={`dashboard is-${view}`} aria-busy={view === 'refreshing'}>
       {totals.started === 0 ? <div className="panel muted">No sessions match these filters yet.</div> : null}
 
