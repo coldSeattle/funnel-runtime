@@ -181,5 +181,14 @@ export function getAnalytics(filters: AnalyticsFilters): Promise<AnalyticsRespon
       utm_campaign: filters.utmCampaign,
       excludeOverrides: filters.excludeOverrides ? 1 : undefined,
     },
+    // Not under /api/admin today; the header is ignored there but keeps the page working if it gets protected.
+    admin: true,
   });
+}
+
+/** Normalises anything thrown around the helpers above into one error type for the UI. */
+export function toApiError(error: unknown): ApiRequestError {
+  if (error instanceof ApiRequestError) return error;
+  const message = error instanceof Error ? error.message : 'Something went wrong.';
+  return new ApiRequestError(0, 'unexpected_error', message);
 }

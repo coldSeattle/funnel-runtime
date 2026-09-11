@@ -1,6 +1,8 @@
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { BrowserRouter, Link, Route, Routes } from 'react-router';
+import { AnalyticsPage } from './admin/AnalyticsPage';
+import { VersionsPage } from './admin/VersionsPage';
 import { FunnelPage } from './funnel/FunnelPage';
 import './styles.css';
 
@@ -24,6 +26,8 @@ createRoot(document.getElementById('root')!).render(
     <BrowserRouter>
       <Routes>
         <Route path="/" element={<FunnelPage />} />
+        <Route path="/admin" element={<VersionsPage />} />
+        <Route path="/admin/analytics" element={<AnalyticsPage />} />
         <Route path="*" element={<NotFound />} />
       </Routes>
     </BrowserRouter>
