@@ -145,6 +145,117 @@ describe('event ingestion', () => {
     expect(JSON.parse(row.properties_json)).toEqual({ answer_kind: 'single' });
   });
 
+  const stored = (id: string) =>
+    app.ctx.db.prepare('SELECT properties_json FROM events WHERE event_id = ?').get(id) as { properties_json: string } | undefined;
+  const outcome = (res: IngestResponse) => res.results.map((r) => [r.event_id, r.status, r.reason]);
+
+  it('rejects a raw answer smuggled into answer_kind without costing the rest of the batch', async () => {
+    const res = (
+      await ingest({
+        events: [
+          event({ event_id: 'kind-multi', session_id: v1, name: 'answer_submitted', step_id: 'priorities', properties: { answer_kind: 'multi' } }),
+          event({ event_id: 'kind-smuggled', session_id: v1, name: 'answer_submitted', step_id: 'work_mode', properties: { answer_kind: 'hybrid, 3 days, compliance' } }),
+          event({ event_id: 'kind-null', session_id: v1, name: 'answer_submitted', step_id: 'work_mode', properties: { answer_kind: null } }),
+          event({ event_id: 'kind-number', session_id: v1, name: 'answer_submitted', step_id: 'team_size', properties: { answer_kind: 12 } }),
+          event({ event_id: 'kind-next', session_id: v1, name: 'step_completed', step_id: 'work_mode', properties: { next_step_id: 'priorities' } }),
+        ],
+      })
+    ).json() as IngestResponse;
+
+    expect(res).toMatchObject({ accepted: 2, duplicates: 0, rejected: 3 });
+    expect(outcome(res)).toEqual([
+      ['kind-multi', 'accepted', undefined],
+      ['kind-smuggled', 'rejected', 'invalid_properties'],
+      ['kind-null', 'rejected', 'invalid_properties'],
+      ['kind-number', 'rejected', 'invalid_properties'],
+      ['kind-next', 'accepted', undefined],
+    ]);
+    expect(stored('kind-smuggled')).toBeUndefined();
+    expect(JSON.parse(stored('kind-multi')!.properties_json)).toEqual({ answer_kind: 'multi' });
+  });
+
+  it.each<[string, unknown]>([
+    ['an object', { answer: 'hybrid' }],
+    ['an array', ['hybrid', 'office']],
+    ['a string of 201 characters', 'x'.repeat(201)],
+  ])('rejects a whitelisted property holding %s with invalid_properties', async (label, value) => {
+    const id = `prop-${label}`;
+    const res = (
+      await ingest({ events: [event({ event_id: id, session_id: v1, name: 'step_completed', step_id: 'work_mode', properties: { next_step_id: value } })] })
+    ).json() as IngestResponse;
+    expect(res.results[0]).toEqual({ event_id: id, status: 'rejected', reason: 'invalid_properties' });
+    expect(stored(id)).toBeUndefined();
+  });
+
+  it('rejects non-finite numbers, which only an in-process caller can send', () => {
+    for (const value of [Number.NaN, Number.POSITIVE_INFINITY]) {
+      const res = app.ctx.services.ingest.ingestBatch([
+        event({ event_id: `nonfinite-${value}`, session_id: v1, properties: { step_type: 'info', visible_step_count: value } }),
+      ]);
+      expect(res.results[0]).toMatchObject({ status: 'rejected', reason: 'invalid_properties' });
+    }
+  });
+
+  it('accepts null, booleans, finite numbers and strings of up to 200 characters', async () => {
+    const res = (
+      await ingest({
+        events: [
+          event({ event_id: 'scalar-view', session_id: v1, properties: { step_type: 'x'.repeat(200), visible_step_index: null, visible_step_count: 7 } }),
+          event({ event_id: 'scalar-cta', session_id: v1, name: 'cta_clicked', step_id: 'result', properties: { result_id: null, action: true } }),
+        ],
+      })
+    ).json() as IngestResponse;
+    expect(res).toMatchObject({ accepted: 2, rejected: 0 });
+  });
+
+  it('still drops non-whitelisted keys silently, whatever they hold', async () => {
+    const res = (
+      await ingest({
+        events: [
+          event({
+            event_id: 'extra-keys',
+            session_id: v1,
+            name: 'answer_submitted',
+            step_id: 'work_mode',
+            properties: { answer_kind: 'single', answer: { mode: 'hybrid', days: [1, 2] }, notes: 'x'.repeat(5000) },
+          }),
+        ],
+      })
+    ).json() as IngestResponse;
+    expect(res.results[0]).toMatchObject({ status: 'accepted' });
+    expect(JSON.parse(stored('extra-keys')!.properties_json)).toEqual({ answer_kind: 'single' });
+  });
+
+  it('rejects a step_id outside the session’s own version and variant with unknown_step', async () => {
+    const res = (
+      await ingest({
+        events: [
+          event({ event_id: 'step-junk', session_id: v1, step_id: 'junk_step' }),
+          event({ event_id: 'step-empty', session_id: v1, step_id: '' }),
+          // v3 has security_constraints; this session is on v1.
+          event({ event_id: 'step-other-version', session_id: v1, step_id: 'security_constraints' }),
+          // v3/B dropped tool_count; the step exists in the config but not in this variant.
+          event({ event_id: 'step-other-variant', session_id: v3, step_id: 'tool_count' }),
+          event({ event_id: 'step-v3b', session_id: v3, step_id: 'security_constraints' }),
+          event({ event_id: 'step-null', session_id: v3, name: 'cta_clicked', step_id: null, properties: { result_id: 'balanced', action: 'expand_recommendation' } }),
+          { event_id: 'step-absent', session_id: v3, name: 'cta_clicked', client_timestamp: '2026-09-11T10:00:00.000Z' },
+        ],
+      })
+    ).json() as IngestResponse;
+
+    expect(outcome(res)).toEqual([
+      ['step-junk', 'rejected', 'unknown_step'],
+      ['step-empty', 'rejected', 'unknown_step'],
+      ['step-other-version', 'rejected', 'unknown_step'],
+      ['step-other-variant', 'rejected', 'unknown_step'],
+      ['step-v3b', 'accepted', undefined],
+      ['step-null', 'accepted', undefined],
+      ['step-absent', 'accepted', undefined],
+    ]);
+    const junk = app.ctx.db.prepare("SELECT COUNT(*) AS n FROM events WHERE step_id IN ('junk_step', '', 'tool_count')").get();
+    expect(junk).toEqual({ n: 0 });
+  });
+
   it('takes version, variant and UTM from the session and ignores client-supplied columns', async () => {
     await ingest({
       events: [

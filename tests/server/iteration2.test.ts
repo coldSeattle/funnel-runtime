@@ -4,7 +4,7 @@ import type { FastifyInstance } from 'fastify';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { buildApp } from '../../server/app';
 import { ensureSeed } from '../../server/seed';
-import type { IncomingEvent, SessionResponse } from '../../shared/api';
+import type { IncomingEvent, IngestResponse, SessionResponse } from '../../shared/api';
 import { runIteration2Check, type Iteration2Check, type Iteration2Options } from '../../scripts/iteration2/check';
 import { createRng } from '../../scripts/traffic/random';
 import { injectTransport, type HttpMethod, type Transport, type TransportResponse } from '../../scripts/traffic/transport';
@@ -73,9 +73,20 @@ describe('iteration 2 acceptance check', () => {
   const detailOf = (checks: Iteration2Check[], step: string) => checks.find((c) => c.step === step)!.detail;
 
   it('publishes v3, proves old and new sessions, rolls back and loses nothing', async () => {
-    const { ok, checks, sessions, lines, recovery } = await run({ traffic: 20, seed: 3 });
+    const rejections: string[] = [];
+    const recording = tampered(app, async (method, path, _body, forward) => {
+      const res = await forward();
+      if (method === 'POST' && path === '/api/events') {
+        for (const r of (res.body as IngestResponse).results) if (r.status === 'rejected') rejections.push(r.reason ?? '');
+      }
+      return res;
+    });
+    const { ok, checks, sessions, lines, recovery } = await run({ traffic: 20, seed: 3, transport: recording });
 
     expect(checks.filter((c) => !c.ok)).toEqual([]);
+    // Ingest refuses only what the run means it to: check 6's v3-only event on v1 and the generator's
+    // planted noise. Every real event passes the property and step checks.
+    expect([...new Set(rejections)].sort()).toEqual(['invalid_shape', 'unknown_event']);
     expect(ok).toBe(true);
     expect(recovery).toBeUndefined();
     expect(checks.map((c) => c.step)).toEqual(ALL_STEPS);

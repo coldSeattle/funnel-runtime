@@ -51,6 +51,23 @@ describe('GET /api/analytics', () => {
     body.steps.reduce((sum, s) => sum + s.exits, 0) + body.exitsBeforeFirstStep + body.totals.reachedResult ===
     body.totals.started;
 
+  /**
+   * An event stored before ingest checked step ids against the session's variant (the API now
+   * refuses it with unknown_step): analytics must still show it rather than lose it.
+   */
+  const storeLegacyView = (session: string, stepId: string, c: number) =>
+    app.ctx.db
+      .prepare(
+        `INSERT INTO events (event_id, session_id, name, client_timestamp, server_timestamp, funnel_id, funnel_version,
+           experiment_id, variant, assignment_source, step_id, utm_source, utm_medium, utm_campaign, properties_json)
+         SELECT ?, session_id, 'step_viewed', ?, ?, funnel_id, funnel_version, experiment_id, variant, assignment_source,
+           ?, utm_source, utm_medium, utm_campaign, '{}'
+         FROM events WHERE session_id = ? AND name = 'session_started'`,
+      )
+      .run(randomUUID(), at(c), new Date().toISOString(), stepId, session);
+
+  let s6 = '';
+
   beforeAll(async () => {
     await app.inject({ method: 'POST', url: '/api/admin/versions', payload: loadRawConfig('funnel-v1.json') });
     await app.inject({ method: 'POST', url: '/api/admin/versions/1/publish' });
@@ -64,7 +81,7 @@ describe('GET /api/analytics', () => {
 
     await app.inject({ method: 'POST', url: '/api/admin/versions', payload: loadRawConfig('funnel-v3.json') });
     await app.inject({ method: 'POST', url: '/api/admin/versions/3/publish' });
-    const s6 = await createSession({ variantOverride: 'B', utm: { campaign: 'autumn' } });
+    s6 = await createSession({ variantOverride: 'B', utm: { campaign: 'autumn' } });
 
     await send([
       ev(s1, 'step_viewed', 'intro', 1),
@@ -104,11 +121,11 @@ describe('GET /api/analytics', () => {
     await send([
       ev(s6, 'step_viewed', 'intro', 1),
       ev(s6, 'step_viewed', 'work_mode', 2),
-      ev(s6, 'step_viewed', 'legacy_step', 3),
       ev(s6, 'step_viewed', 'result', 4),
       ev(s6, 'result_viewed', 'result', 5),
       ev(s6, 'cta_clicked', 'result', 6),
     ]);
+    storeLegacyView(s6, 'legacy_step', 3);
   });
   afterAll(async () => {
     await app.close();
@@ -154,6 +171,14 @@ describe('GET /api/analytics', () => {
     // v1 puts `result` before the steps v3 added; the dashboard still ends on the result row.
     expect(body.steps.at(-1)).toMatchObject({ stepId: 'result', type: 'result', reached: 3 });
     expect(body.steps.find((s) => s.stepId === 'legacy_step')).toMatchObject({ type: null, reached: 1 });
+  });
+
+  it('refuses a step id the session cannot show, so junk never becomes a row in the step table', async () => {
+    const res = await app.inject({ method: 'POST', url: '/api/events', payload: { events: [ev(s6, 'step_viewed', 'junk_step', 7)] } });
+    expect(res.json().results[0]).toMatchObject({ status: 'rejected', reason: 'unknown_step' });
+    const body = await get();
+    expect(body.steps.map((s) => s.stepId)).not.toContain('junk_step');
+    expect(body.totals.started).toBe(6);
   });
 
   it('lists the filter options from stored versions and sessions', async () => {

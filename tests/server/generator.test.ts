@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { buildApp } from '../../server/app';
 import { ensureSeed } from '../../server/seed';
 import { resolveVariant, validateAnswer, isInteractive } from '../../shared/engine';
-import type { AnalyticsResponse, IncomingEvent } from '../../shared/api';
+import type { AnalyticsResponse, IncomingEvent, IngestResponse } from '../../shared/api';
 import { createRng, deriveSeed } from '../../scripts/traffic/random';
 import {
   explainedByConcurrentTraffic,
@@ -64,6 +64,27 @@ async function freshApp(): Promise<FastifyInstance> {
   await ensureSeed(app, { configsDir });
   return app;
 }
+
+/** The in-process transport, counting every rejection reason ingest answers with. */
+function recordingRejections(app: FastifyInstance): { transport: Transport; reasons: Map<string, number> } {
+  const inner = injectTransport(app);
+  const reasons = new Map<string, number>();
+  const transport: Transport = {
+    async request<T>(method: HttpMethod, path: string, body?: unknown) {
+      const res = await inner.request<T>(method, path, body);
+      if (method === 'POST' && path === '/api/events') {
+        for (const r of (res.body as IngestResponse).results) {
+          if (r.status === 'rejected') reasons.set(r.reason ?? '', (reasons.get(r.reason ?? '') ?? 0) + 1);
+        }
+      }
+      return res;
+    },
+  };
+  return { transport, reasons };
+}
+
+/** Only the generator's deliberate noise may be refused: a broken event and an unknown event name. */
+const NOISE_REASONS = ['invalid_shape', 'unknown_event'];
 
 describe('seeded PRNG', () => {
   it('repeats the same sequence for the same seed', () => {
@@ -147,9 +168,13 @@ describe('generateTraffic on v1', () => {
     const app = await freshApp();
     try {
       const lines: string[] = [];
-      const summary = await generateTraffic({ transport: injectTransport(app), sessions: 30, seed: 7, log: (l) => lines.push(l) });
+      const { transport, reasons } = recordingRejections(app);
+      const summary = await generateTraffic({ transport, sessions: 30, seed: 7, log: (l) => lines.push(l) });
 
       expect(summary.ok).toBe(true);
+      // Every real event passes ingest's property and step checks; only the planted noise is refused.
+      expect([...reasons.keys()].sort()).toEqual(NOISE_REASONS);
+      expect([...reasons.values()].reduce((a, b) => a + b, 0)).toBe(summary.rejected);
       expect(summary.sessions).toBe(30);
       expect(summary.actualDelta).toEqual(summary.expected);
       expect(summary.accepted + summary.duplicates + summary.rejected).toBe(summary.eventsSent);
@@ -266,8 +291,10 @@ describe('generateTraffic on v3', () => {
       expect((await app.inject({ method: 'POST', url: '/api/admin/versions', payload: loadRawConfig('funnel-v3.json') })).statusCode).toBe(201);
       expect((await app.inject({ method: 'POST', url: '/api/admin/versions/3/publish' })).statusCode).toBe(200);
 
-      const summary = await generateTraffic({ transport: injectTransport(app), sessions: 40, seed: 3 });
+      const { transport, reasons } = recordingRejections(app);
+      const summary = await generateTraffic({ transport, sessions: 40, seed: 3 });
       expect(summary.ok).toBe(true);
+      expect([...reasons.keys()].sort()).toEqual(NOISE_REASONS);
 
       const body = await analyticsOf(app, '?version=3');
       expect(body.totals.started).toBe(40);
