@@ -21,7 +21,7 @@ import type {
 } from '../../shared/api';
 import type { AnswerValue, Answers, ResolvedFunnel, Step } from '../../shared/types';
 import type { Rng } from './random';
-import { createRng } from './random';
+import { createRng, deriveSeed } from './random';
 import type { HttpMethod, Transport } from './transport';
 
 // Simulation knobs. B gets a lower intro drop-off and +10 pp on the CTA so the A/B comparison
@@ -105,12 +105,17 @@ class ApiError extends Error {}
 /**
  * Drives `sessions` synthetic users through the real API on whatever version is active, sends
  * their events with realistic delivery noise and checks the analytics delta against the numbers
- * the simulation expects. Deterministic for a given seed, apart from the server's variant draw.
+ * the simulation expects.
+ *
+ * Seeding: session i draws from its own stream `deriveSeed(seed, i)`, so its UTM, override,
+ * behaviour flags and noise are fixed by the seed. The variant of a non-override session is the
+ * server's draw (Math.random), which the seed cannot reach; drop-off and CTA rates depend on it,
+ * so result/CTA totals differ between runs with the same seed. The check is always this run's
+ * expected numbers against this run's analytics delta.
  */
 export async function generateTraffic(opts: GenerateOptions): Promise<GeneratorSummary> {
   const { transport, sessions, seed } = opts;
   const log = opts.log ?? (() => {});
-  const rng = createRng(seed);
   const call = caller(transport);
   const now = Date.now();
 
@@ -123,6 +128,7 @@ export async function generateTraffic(opts: GenerateOptions): Promise<GeneratorS
 
   for (let i = 0; i < sessions; i++) {
     const forced = sessions >= NOISE_COVERAGE_MIN_SESSIONS ? NOISE_KINDS[i] : undefined;
+    const rng = createRng(deriveSeed(seed, i));
     const outcome = await runSession({ call, rng, now, forcedNoise: forced, delivery });
 
     const bucket = (expected.byVariant[outcome.variant] ??= zero());
@@ -446,5 +452,6 @@ function formatSummary(s: GeneratorSummary, seed: number): string[] {
       row(label, triple(expected), triple(actual), sameCounts(pickCounts(expected), pickCounts(actual)) ? 'OK' : 'MISMATCH'),
     ),
     s.ok ? 'Result: OK, analytics match the simulation' : 'Result: MISMATCH, analytics differ from the simulation',
+    '  note: the server draws each variant, so result/cta totals vary between runs with the same seed',
   ];
 }

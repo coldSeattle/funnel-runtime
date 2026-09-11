@@ -5,7 +5,7 @@ import { buildApp } from '../../server/app';
 import { ensureSeed } from '../../server/seed';
 import { resolveVariant, validateAnswer, isInteractive } from '../../shared/engine';
 import type { AnalyticsResponse } from '../../shared/api';
-import { createRng } from '../../scripts/traffic/random';
+import { createRng, deriveSeed } from '../../scripts/traffic/random';
 import { generateTraffic, pickAnswer, NOISE_KINDS, type GeneratorSummary } from '../../scripts/traffic/generator';
 import { injectTransport } from '../../scripts/traffic/transport';
 import { loadConfig, loadRawConfig } from '../helpers/configs';
@@ -13,7 +13,8 @@ import { loadConfig, loadRawConfig } from '../helpers/configs';
 const configsDir = fileURLToPath(new URL('../../configs', import.meta.url));
 
 // Variant assignment is the server's weighted Math.random, which the generator's seed does not
-// control. Pinning it keeps these tests deterministic; the generator never calls Math.random.
+// control. Pinning it keeps these tests deterministic; the determinism tests below count the
+// calls to prove that the server is the only caller.
 beforeEach(() => {
   vi.spyOn(Math, 'random').mockImplementation(createRng(20260911).next);
 });
@@ -61,6 +62,15 @@ describe('seeded PRNG', () => {
     expect(items).toContain(rng.pick(items));
     expect(rng.chance(0)).toBe(false);
     expect(rng.chance(1)).toBe(true);
+  });
+
+  it('derives a distinct, repeatable seed per session', () => {
+    const seeds = Array.from({ length: 1000 }, (_, i) => deriveSeed(42, i));
+    expect(new Set(seeds).size).toBe(seeds.length);
+    expect(seeds.every((s) => Number.isInteger(s) && s >= 0 && s < 2 ** 32)).toBe(true);
+    expect(deriveSeed(42, 7)).toBe(seeds[7]);
+    expect(deriveSeed(43, 7)).not.toBe(seeds[7]);
+    expect(deriveSeed(0, 0)).not.toBe(deriveSeed(0, 1));
   });
 });
 
@@ -136,22 +146,63 @@ describe('generateTraffic on v1', () => {
     }
   });
 
-  it('computes identical expected numbers for the same seed on two fresh apps', async () => {
-    const run = async (): Promise<GeneratorSummary> => {
-      vi.spyOn(Math, 'random').mockImplementation(createRng(77).next);
+  it('is deterministic for a seed given the same server variant draws', async () => {
+    const run = async (): Promise<{ summary: GeneratorSummary; randomCalls: number }> => {
       const app = await freshApp();
+      const random = vi.spyOn(Math, 'random').mockImplementation(createRng(77).next);
+      random.mockClear();
       try {
-        return await generateTraffic({ transport: injectTransport(app), sessions: 25, seed: 1234 });
+        const summary = await generateTraffic({ transport: injectTransport(app), sessions: 25, seed: 1234 });
+        return { summary, randomCalls: random.mock.calls.length };
       } finally {
         await app.close();
       }
     };
     const first = await run();
     const second = await run();
-    expect(second.expected).toEqual(first.expected);
-    expect(second.noise).toEqual(first.noise);
-    expect(second.behaviour).toEqual(first.behaviour);
-    expect(first.ok && second.ok).toBe(true);
+    expect(second.summary.expected).toEqual(first.summary.expected);
+    expect(second.summary.noise).toEqual(first.summary.noise);
+    expect(second.summary.behaviour).toEqual(first.summary.behaviour);
+    expect(first.summary.ok && second.summary.ok).toBe(true);
+    // One draw per server-assigned session and nothing else: the generator never calls Math.random,
+    // so the stub above is the only thing that is not covered by the seed.
+    for (const { summary, randomCalls } of [first, second]) {
+      expect(randomCalls).toBe(summary.sessions - summary.behaviour.overrides);
+    }
+  });
+
+  it('keeps every session plan for a seed when the server draws variants differently', async () => {
+    type Row = { variant: string; assignment_source: string; utm_source: string; utm_medium: string; utm_campaign: string };
+    const run = async (serverSeed: number): Promise<{ summary: GeneratorSummary; rows: Row[] }> => {
+      const app = await freshApp();
+      vi.spyOn(Math, 'random').mockImplementation(createRng(serverSeed).next);
+      try {
+        const summary = await generateTraffic({ transport: injectTransport(app), sessions: 40, seed: 1234 });
+        const rows = app.ctx.db
+          .prepare('SELECT variant, assignment_source, utm_source, utm_medium, utm_campaign FROM sessions ORDER BY rowid')
+          .all() as Row[];
+        return { summary, rows };
+      } finally {
+        await app.close();
+      }
+    };
+    const first = await run(77);
+    const second = await run(78);
+    // The premise: the server really did assign differently, and the plan includes overrides.
+    expect(second.rows.map((r) => r.variant)).not.toEqual(first.rows.map((r) => r.variant));
+    expect(first.summary.behaviour.overrides).toBeGreaterThan(0);
+
+    // What the seed controls stays put, session by session.
+    const plan = (rows: Row[]) =>
+      rows.map((r) => ({
+        utm: [r.utm_source, r.utm_medium, r.utm_campaign],
+        override: r.assignment_source === 'override' ? r.variant : null,
+      }));
+    expect(plan(second.rows)).toEqual(plan(first.rows));
+    expect(second.summary.noise).toEqual(first.summary.noise);
+    expect(second.summary.behaviour.overrides).toBe(first.summary.behaviour.overrides);
+    expect(second.summary.expected.started).toBe(first.summary.expected.started);
+    expect(first.summary.ok && second.summary.ok).toBe(true);
   });
 });
 

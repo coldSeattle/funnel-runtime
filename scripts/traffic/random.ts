@@ -10,6 +10,17 @@ export function mulberry32(seed: number): () => number {
   };
 }
 
+/**
+ * A well-mixed 32-bit seed for stream `index` of `seed` (murmur3 finalizer), so that each
+ * session gets its own stream and never inherits the draws of the sessions before it.
+ */
+export function deriveSeed(seed: number, index: number): number {
+  let h = (Math.imul(seed >>> 0, 0x9e3779b1) ^ Math.imul(index + 1, 0x85ebca77)) >>> 0;
+  h = Math.imul(h ^ (h >>> 16), 0x7feb352d);
+  h = Math.imul(h ^ (h >>> 15), 0x846ca68b);
+  return (h ^ (h >>> 16)) >>> 0;
+}
+
 export interface Rng {
   /** Uniform in [0, 1) */
   next: () => number;
