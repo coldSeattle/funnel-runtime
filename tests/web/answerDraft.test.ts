@@ -1,5 +1,4 @@
 import { describe, expect, it } from 'vitest';
-import { validateAnswer } from '../../shared/engine';
 import type { Step } from '../../shared/types';
 import { formatNumberDraft, validateDraft } from '../../web/funnel/answerDraft';
 import { loadConfig } from '../helpers/configs';
@@ -31,12 +30,6 @@ describe('validateDraft: number steps', () => {
     expect(validateDraft(step('team_size'), '201')).toEqual({ ok: false, message: 'For this demo, enter a value up to 200.' });
     expect(validateDraft(step('team_size'), '2.5')).toEqual({ ok: false, message: 'Enter a whole number.' });
     expect(validateDraft(step('team_size'), '')).toEqual({ ok: false, message: 'Enter the team size.' });
-  });
-
-  it('differs from the bare engine exactly where the engine is too lenient', () => {
-    // If these start failing, shared/engine/validate.ts got the same fix and validateDraft can shrink.
-    expect(validateAnswer(step('office_days'), '   ')).toEqual({ ok: true, value: 0 });
-    expect(validateAnswer(step('team_size'), '0x10')).toEqual({ ok: true, value: 16 });
   });
 });
 
