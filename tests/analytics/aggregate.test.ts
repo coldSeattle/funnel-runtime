@@ -175,6 +175,39 @@ describe('aggregate', () => {
     });
   });
 
+  it('groups the same totals by version, then variant, so two experiments are never pooled', () => {
+    expect(result.byVersionVariant).toEqual({
+      '1': {
+        A: { started: 3, reachedResult: 1, ctaClicked: 1, ctr: 1, primary: 1 / 3 },
+        B: { started: 2, reachedResult: 1, ctaClicked: 0, ctr: 0, primary: 0 },
+      },
+      '3': {
+        B: { started: 1, reachedResult: 1, ctaClicked: 1, ctr: 1, primary: 1 },
+      },
+    });
+    // byVariant pools B across both versions (s3, s4 on v1 and s6 on v3); per version it splits.
+    const pooledB = result.byVariant.B!;
+    const splitB = [result.byVersionVariant['1']!.B!, result.byVersionVariant['3']!.B!];
+    expect(splitB.reduce((sum, t) => sum + t.started, 0)).toBe(pooledB.started);
+    expect(splitB.map((t) => t.primary)).toEqual([0, 1]);
+  });
+
+  it('keeps a version × variant cell to sessions started in it, even with orphan events around', () => {
+    const extra = aggregate(
+      [
+        ...fixture(),
+        // s9 started on v3/A; a stray v3/B result for it must not create or feed a v3/B cell.
+        row({ session: 's9', name: 'session_started', c: 0, variant: 'A', version: 3 }),
+        row({ session: 's9', name: 'result_viewed', step: 'result', c: 1, variant: 'B', version: 3 }),
+      ],
+      stepOrder,
+    );
+    expect(extra.byVersionVariant['3']).toEqual({
+      B: { started: 1, reachedResult: 1, ctaClicked: 1, ctr: 1, primary: 1 },
+      A: { started: 1, reachedResult: 0, ctaClicked: 0, ctr: null, primary: 0 },
+    });
+  });
+
   it('does not care about the order events arrive in', () => {
     const shuffled = [...fixture()].reverse();
     expect(aggregate(shuffled, stepOrder)).toEqual(result);
@@ -199,6 +232,7 @@ describe('aggregate', () => {
     expect(onlyOrphans.steps.every((s) => s.reached === 0 && s.completed === 0 && s.exits === 0)).toBe(true);
     expect(onlyOrphans.byVariant).toEqual({});
     expect(onlyOrphans.byVersion).toEqual({});
+    expect(onlyOrphans.byVersionVariant).toEqual({});
     const exits = onlyOrphans.steps.reduce((sum, s) => sum + s.exits, 0);
     expect(exits + onlyOrphans.exitsBeforeFirstStep + onlyOrphans.totals.reachedResult).toBe(onlyOrphans.totals.started);
   });
@@ -210,5 +244,6 @@ describe('aggregate', () => {
     expect(empty.steps.map((s) => s.reachRate)).toEqual([null, null, null, null]);
     expect(empty.byVariant).toEqual({});
     expect(empty.byVersion).toEqual({});
+    expect(empty.byVersionVariant).toEqual({});
   });
 });

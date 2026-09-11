@@ -150,6 +150,14 @@ describe('GET /api/analytics', () => {
       '1': { started: 5, reachedResult: 2, ctaClicked: 1, ctr: 0.5, primary: 0.2 },
       '3': { started: 1, reachedResult: 1, ctaClicked: 1, ctr: 1, primary: 1 },
     });
+    // byVariant.B above pools v1/B with v3/B, two different experiments; split per version here.
+    expect(body.byVersionVariant).toEqual({
+      '1': {
+        A: { started: 3, reachedResult: 1, ctaClicked: 1, ctr: 1, primary: 1 / 3 },
+        B: { started: 2, reachedResult: 1, ctaClicked: 0, ctr: 0, primary: 0 },
+      },
+      '3': { B: { started: 1, reachedResult: 1, ctaClicked: 1, ctr: 1, primary: 1 } },
+    });
   });
 
   it('orders steps across all versions: v1 sequence, then steps new in v3, then unknown ones, result last', async () => {
@@ -205,6 +213,12 @@ describe('GET /api/analytics', () => {
         B: { started: 2, reachedResult: 1, ctaClicked: 0, ctr: 0, primary: 0 },
       });
       expect(Object.keys(body.byVersion)).toEqual(['1']);
+      expect(body.byVersionVariant).toEqual({
+        '1': {
+          A: { started: 2, reachedResult: 1, ctaClicked: 1, ctr: 1, primary: 0.5 },
+          B: { started: 2, reachedResult: 1, ctaClicked: 0, ctr: 0, primary: 0 },
+        },
+      });
       expect(invariantHolds(body)).toBe(true);
     }
     // Overrides live on both versions, so no version filter selects the same sessions.
@@ -217,6 +231,7 @@ describe('GET /api/analytics', () => {
     const body = await get('?version=3');
     expect(body.filters).toEqual({ version: 3 });
     expect(body.totals).toEqual({ started: 1, reachedResult: 1, ctaClicked: 1, ctr: 1, primary: 1 });
+    expect(body.byVersionVariant).toEqual({ '3': { B: { started: 1, reachedResult: 1, ctaClicked: 1, ctr: 1, primary: 1 } } });
     expect(invariantHolds(body)).toBe(true);
     expect(body.steps.map((s) => s.stepId)).toEqual([
       'intro',
@@ -284,6 +299,7 @@ describe('GET /api/analytics on an empty database', () => {
       expect(body.exitsBeforeFirstStep).toBe(0);
       expect(body.byVariant).toEqual({});
       expect(body.byVersion).toEqual({});
+      expect(body.byVersionVariant).toEqual({});
       expect(body.options).toEqual({ versions: [], variants: [], campaigns: [] });
     }
   });

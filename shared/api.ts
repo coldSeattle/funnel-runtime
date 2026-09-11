@@ -163,8 +163,11 @@ export interface AnalyticsResponse {
   totals: Totals;
   steps: StepRow[];
   exitsBeforeFirstStep: number;
+  /** Pools every selected version: without a version filter it mixes different experiments. */
   byVariant: Record<string, Totals>;
   byVersion: Record<string, Totals>;
+  /** funnel_version → variant → totals, same started-set rules: an A/B comparison within one experiment. */
+  byVersionVariant: Record<string, Record<string, Totals>>;
 }
 
 export interface HealthResponse {

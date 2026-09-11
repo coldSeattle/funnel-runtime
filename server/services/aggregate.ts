@@ -23,6 +23,7 @@ export interface AggregateResult {
   exitsBeforeFirstStep: number;
   byVariant: Record<string, Totals>;
   byVersion: Record<string, Totals>;
+  byVersionVariant: Record<string, Record<string, Totals>>;
 }
 
 interface Funnel {
@@ -47,6 +48,14 @@ export function aggregate(events: AggregateEvent[], stepOrder: StepOrderEntry[])
   const overall = newFunnel();
   const byVariant = new Map<string, Funnel>();
   const byVersion = new Map<string, Funnel>();
+  // Variant keys are only comparable inside one version: each version runs its own experiment.
+  const byVersionVariant = new Map<string, Map<string, Funnel>>();
+  const variantsOf = (version: number): Map<string, Funnel> => {
+    const key = String(version);
+    let variants = byVersionVariant.get(key);
+    if (!variants) byVersionVariant.set(key, (variants = new Map()));
+    return variants;
+  };
 
   // Pass 1: the started sets. Every other metric is counted only inside them, so a session whose
   // session_started is missing (lost, or cut by a filter) can never break the invariant.
@@ -55,6 +64,7 @@ export function aggregate(events: AggregateEvent[], stepOrder: StepOrderEntry[])
     overall.started.add(event.session_id);
     group(byVariant, event.variant).started.add(event.session_id);
     group(byVersion, String(event.funnel_version)).started.add(event.session_id);
+    group(variantsOf(event.funnel_version), event.variant).started.add(event.session_id);
   }
 
   const reached = new Map<string, Set<string>>();
@@ -68,6 +78,7 @@ export function aggregate(events: AggregateEvent[], stepOrder: StepOrderEntry[])
     track(overall, event.name, session);
     track(byVariant.get(event.variant), event.name, session);
     track(byVersion.get(String(event.funnel_version)), event.name, session);
+    track(byVersionVariant.get(String(event.funnel_version))?.get(event.variant), event.name, session);
 
     const stepId = event.step_id;
     if (stepId === null || stepId === '') continue;
@@ -124,9 +135,14 @@ export function aggregate(events: AggregateEvent[], stepOrder: StepOrderEntry[])
     totals: toTotals(overall),
     steps,
     exitsBeforeFirstStep,
-    byVariant: Object.fromEntries([...byVariant].map(([key, funnel]) => [key, toTotals(funnel)])),
-    byVersion: Object.fromEntries([...byVersion].map(([key, funnel]) => [key, toTotals(funnel)])),
+    byVariant: totalsOf(byVariant),
+    byVersion: totalsOf(byVersion),
+    byVersionVariant: Object.fromEntries([...byVersionVariant].map(([version, variants]) => [version, totalsOf(variants)])),
   };
+}
+
+function totalsOf(groups: Map<string, Funnel>): Record<string, Totals> {
+  return Object.fromEntries([...groups].map(([key, funnel]) => [key, toTotals(funnel)]));
 }
 
 function newFunnel(): Funnel {
