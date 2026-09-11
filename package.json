@@ -18,7 +18,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc -p tsconfig.web.json && tsc -p tsconfig.server.json",
-    "seed": "tsx scripts/generate-traffic.ts"
+    "seed": "tsx scripts/generate-traffic.ts",
+    "iteration2": "tsx scripts/iteration2-check.ts"
   },
   "dependencies": {
     "@fastify/static": "^10.1.3",
