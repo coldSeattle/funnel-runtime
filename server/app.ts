@@ -90,7 +90,9 @@ export function buildApp(opts: AppOptions = {}): FastifyInstance {
   }
 
   app.setNotFoundHandler((req, reply) => {
-    if (serveStatic && req.method === 'GET' && !req.url.startsWith('/api/')) {
+    const path = req.url.split('?')[0]!;
+    const isApi = path === '/api' || path.startsWith('/api/');
+    if (serveStatic && req.method === 'GET' && !isApi) {
       return reply.sendFile('index.html');
     }
     return reply.status(404).send({ error: { code: 'not_found', message: `Route ${req.method} ${req.url} not found` } });
