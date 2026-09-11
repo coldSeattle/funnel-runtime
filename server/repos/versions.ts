@@ -33,7 +33,6 @@ export interface VersionsRepo {
   countSessionsByVersion(funnelId: string): Map<number, number>;
   insertHistory(row: Omit<HistoryRow, 'id'>): void;
   listHistory(funnelId: string): HistoryRow[];
-  latestHistory(funnelId: string): HistoryRow | undefined;
 }
 
 /** Only one funnel is supported by the UI, so the funnel row is read without an id where possible. */
@@ -56,7 +55,6 @@ export function createVersionsRepo(db: Db): VersionsRepo {
      VALUES (@funnel_id, @action, @from_version, @to_version, @at)`,
   );
   const selectHistory = db.prepare('SELECT * FROM version_history WHERE funnel_id = ? ORDER BY id ASC');
-  const selectLatestHistory = db.prepare('SELECT * FROM version_history WHERE funnel_id = ? ORDER BY id DESC LIMIT 1');
 
   return {
     getFunnel: () => selectFunnel.get() as FunnelRow | undefined,
@@ -72,6 +70,5 @@ export function createVersionsRepo(db: Db): VersionsRepo {
     },
     insertHistory: (row) => void insertHistory.run(row),
     listHistory: (funnelId) => selectHistory.all(funnelId) as HistoryRow[],
-    latestHistory: (funnelId) => selectLatestHistory.get(funnelId) as HistoryRow | undefined,
   };
 }

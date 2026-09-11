@@ -1,7 +1,119 @@
 import { afterAll, describe, expect, it } from 'vitest';
 import { buildApp } from '../../server/app';
-import type { HistoryResponse, VersionsResponse } from '../../shared/api';
+import { rollbackTarget } from '../../server/services/versions';
+import type { HistoryEntry, HistoryResponse, VersionsResponse } from '../../shared/api';
 import { loadRawConfig, makeSyntheticV2 } from '../helpers/configs';
+
+type Step = ['publish', number] | ['rollback'];
+
+/** Replays admin actions as history rows the way the service writes them (rollback to the target). */
+function replay(steps: Step[]): Pick<HistoryEntry, 'action' | 'toVersion'>[] {
+  const rows: Pick<HistoryEntry, 'action' | 'toVersion'>[] = [];
+  for (const step of steps) {
+    if (step[0] === 'publish') {
+      rows.push({ action: 'publish', toVersion: step[1] });
+    } else {
+      const target = rollbackTarget(rows);
+      if (target === null) throw new Error('nothing to roll back');
+      rows.push({ action: 'rollback', toVersion: target });
+    }
+  }
+  return rows;
+}
+
+describe('rollbackTarget: undo stack over the history', () => {
+  it.each<[string, Step[], number | null]>([
+    ['nothing published', [], null],
+    ['publish 1', [['publish', 1]], null],
+    ['publish 1, publish 3', [['publish', 1], ['publish', 3]], 1],
+    ['publish 1, publish 3, rollback', [['publish', 1], ['publish', 3], ['rollback']], null],
+    ['publish 1, publish 3, rollback, publish 3', [['publish', 1], ['publish', 3], ['rollback'], ['publish', 3]], 1],
+    ['publish 1, publish 3, publish 1', [['publish', 1], ['publish', 3], ['publish', 1]], 3],
+    ['publish 1, publish 3, publish 1, rollback', [['publish', 1], ['publish', 3], ['publish', 1], ['rollback']], 1],
+    ['publish 1, publish 2, publish 3, rollback', [['publish', 1], ['publish', 2], ['publish', 3], ['rollback']], 1],
+  ])('%s → %s', (_label, steps, expected) => {
+    expect(rollbackTarget(replay(steps))).toBe(expected);
+  });
+
+  it('ignores a publish of the version already on top', () => {
+    expect(
+      rollbackTarget([
+        { action: 'publish', toVersion: 1 },
+        { action: 'publish', toVersion: 1 },
+      ]),
+    ).toBeNull();
+  });
+
+  it('re-syncs on a toggle-era rollback row, so the top is always the active version', () => {
+    // Written by the old semantics: publish 1, publish 3, rollback 3→1, rollback 1→3 (v3 active).
+    const legacy: Pick<HistoryEntry, 'action' | 'toVersion'>[] = [
+      { action: 'publish', toVersion: 1 },
+      { action: 'publish', toVersion: 3 },
+      { action: 'rollback', toVersion: 1 },
+      { action: 'rollback', toVersion: 3 },
+    ];
+    expect(rollbackTarget(legacy)).toBeNull();
+    expect(rollbackTarget([...legacy, { action: 'publish', toVersion: 1 }])).toBe(3);
+  });
+});
+
+describe('POST /api/admin/rollback follows the undo stack', () => {
+  const app = buildApp();
+  afterAll(async () => {
+    await app.close();
+  });
+
+  const publish = async (version: number) => {
+    const res = await app.inject({ method: 'POST', url: `/api/admin/versions/${version}/publish` });
+    expect(res.statusCode).toBe(200);
+  };
+  const rollback = () => app.inject({ method: 'POST', url: '/api/admin/rollback' });
+  const versions = async () => (await app.inject({ method: 'GET', url: '/api/admin/versions' })).json() as VersionsResponse;
+
+  it('walks back publish by publish, then refuses, and GET /versions announces each target', async () => {
+    for (const payload of [loadRawConfig('funnel-v1.json'), makeSyntheticV2(), loadRawConfig('funnel-v3.json')]) {
+      expect((await app.inject({ method: 'POST', url: '/api/admin/versions', payload })).statusCode).toBe(201);
+    }
+    await publish(1);
+    expect((await versions()).rollbackTarget).toBeNull();
+    expect((await rollback()).statusCode).toBe(409);
+
+    await publish(3);
+    await publish(1);
+    expect(await versions()).toMatchObject({ activeVersion: 1, rollbackTarget: 3 });
+
+    expect((await rollback()).json()).toEqual({ activeVersion: 3, fromVersion: 1 });
+    expect(await versions()).toMatchObject({ activeVersion: 3, rollbackTarget: 1 });
+
+    expect((await rollback()).json()).toEqual({ activeVersion: 1, fromVersion: 3 });
+    expect(await versions()).toMatchObject({ activeVersion: 1, rollbackTarget: null });
+
+    const refused = await rollback();
+    expect(refused.statusCode).toBe(409);
+    expect(refused.json().error.code).toBe('nothing_to_rollback');
+
+    await publish(2);
+    await publish(3);
+    expect(await versions()).toMatchObject({ activeVersion: 3, rollbackTarget: 2 });
+    expect((await rollback()).json()).toEqual({ activeVersion: 2, fromVersion: 3 });
+    expect((await rollback()).json()).toEqual({ activeVersion: 1, fromVersion: 2 });
+    expect((await rollback()).statusCode).toBe(409);
+
+    // History rows keep their shape: rollback rows record where they came from and went to.
+    const { history } = (await app.inject({ method: 'GET', url: '/api/admin/history' })).json() as HistoryResponse;
+    expect(history.map((h) => [h.action, h.fromVersion, h.toVersion])).toEqual([
+      ['publish', null, 1],
+      ['publish', 1, 3],
+      ['publish', 3, 1],
+      ['rollback', 1, 3],
+      ['rollback', 3, 1],
+      ['publish', 1, 2],
+      ['publish', 2, 3],
+      ['rollback', 3, 2],
+      ['rollback', 2, 1],
+    ]);
+  });
+});
 
 describe('admin versions: upload, publish, rollback, history', () => {
   const app = buildApp();
@@ -16,7 +128,7 @@ describe('admin versions: upload, publish, rollback, history', () => {
   };
 
   it('reports an empty funnel before anything is uploaded', async () => {
-    expect(await list()).toEqual({ funnelId: null, activeVersion: null, versions: [] });
+    expect(await list()).toEqual({ funnelId: null, activeVersion: null, rollbackTarget: null, versions: [] });
   });
 
   it('uploads v1 as a draft', async () => {
@@ -150,28 +262,28 @@ describe('admin versions: upload, publish, rollback, history', () => {
     expect(history[0]!.at).toMatch(/^\d{4}-\d{2}-\d{2}T/);
   });
 
-  it('rolls back again: the target is the version the last transition came from', async () => {
-    const v3Before = (await list()).versions.find((v) => v.version === 3)!.publishedAt;
+  it('does not toggle: a second rollback has nothing to undo and leaves v1 active', async () => {
+    expect((await list()).rollbackTarget).toBeNull();
     const res = await app.inject({ method: 'POST', url: '/api/admin/rollback' });
-    expect(res.statusCode).toBe(200);
-    expect(res.json()).toMatchObject({ activeVersion: 3, fromVersion: 1 });
+    expect(res.statusCode).toBe(409);
+    expect(res.json().error.code).toBe('nothing_to_rollback');
 
-    const v3 = (await list()).versions.find((v) => v.version === 3)!;
-    expect(v3.status).toBe('active');
-    expect(v3.publishedAt).toBe(v3Before);
-
+    const body = await list();
+    expect(body.activeVersion).toBe(1);
     const { history } = (await app.inject({ method: 'GET', url: '/api/admin/history' })).json() as HistoryResponse;
-    expect(history.at(-1)).toMatchObject({ action: 'rollback', fromVersion: 1, toVersion: 3 });
+    expect(history).toHaveLength(3);
   });
 
   it('re-publishing a version keeps its first published_at', async () => {
-    const v1Before = (await list()).versions.find((v) => v.version === 1)!.publishedAt;
-    const res = await app.inject({ method: 'POST', url: '/api/admin/versions/1/publish' });
+    const v3Before = (await list()).versions.find((v) => v.version === 3)!.publishedAt;
+    const res = await app.inject({ method: 'POST', url: '/api/admin/versions/3/publish' });
     expect(res.statusCode).toBe(200);
-    expect(res.json()).toMatchObject({ activeVersion: 1, fromVersion: 3 });
-    const v1 = (await list()).versions.find((v) => v.version === 1)!;
-    expect(v1.status).toBe('active');
-    expect(v1.publishedAt).toBe(v1Before);
+    expect(res.json()).toMatchObject({ activeVersion: 3, fromVersion: 1 });
+    const body = await list();
+    const v3 = body.versions.find((v) => v.version === 3)!;
+    expect(v3.status).toBe('active');
+    expect(v3.publishedAt).toBe(v3Before);
+    expect(body.rollbackTarget).toBe(1);
   });
 
   it('accepts bodiless admin POSTs sent with a JSON content-type, as fetch wrappers often do', async () => {
@@ -181,7 +293,7 @@ describe('admin versions: upload, publish, rollback, history', () => {
       headers: { 'content-type': 'application/json' },
     });
     expect(res.statusCode).toBe(200);
-    expect(res.json()).toMatchObject({ activeVersion: 3, fromVersion: 1 });
+    expect(res.json()).toMatchObject({ activeVersion: 1, fromVersion: 3 });
   });
 
   it('answers a syntactically broken JSON body with 400 invalid_body', async () => {

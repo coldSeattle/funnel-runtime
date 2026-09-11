@@ -3,7 +3,7 @@ import { HttpError } from '../errors';
 import { createVersionsRepo, type VersionsRepo } from '../repos/versions';
 import { safeParseFunnelConfig } from '../../shared/schema';
 import type { FunnelConfig } from '../../shared/types';
-import type { HistoryResponse, VersionStatus, VersionSummary, VersionsResponse } from '../../shared/api';
+import type { HistoryEntry, HistoryResponse, VersionStatus, VersionSummary, VersionsResponse } from '../../shared/api';
 
 export interface ActiveVersion {
   version: number;
@@ -27,9 +27,38 @@ export interface VersionsService {
   hasVersions(): boolean;
 }
 
+/**
+ * Rollback is an undo stack replayed from the history: a publish pushes its version (unless it is
+ * already on top), a rollback pops. The target is the entry below the top, null when there is none.
+ * So after publish 1, publish 3, rollback the stack is [1] and a second rollback has nothing to undo;
+ * it never swings back to 3. A rollback row whose `toVersion` is not the new top (history written by
+ * the earlier toggle semantics) re-syncs the stack to that version, so the top stays the active one.
+ */
+export function rollbackTarget(history: readonly Pick<HistoryEntry, 'action' | 'toVersion'>[]): number | null {
+  const stack: number[] = [];
+  for (const entry of history) {
+    if (entry.action === 'publish') {
+      if (stack.at(-1) !== entry.toVersion) stack.push(entry.toVersion);
+      continue;
+    }
+    stack.pop();
+    if (stack.at(-1) !== entry.toVersion) stack.push(entry.toVersion);
+  }
+  return stack.length >= 2 ? stack[stack.length - 2]! : null;
+}
+
 export function createVersionsService(db: Db, repo: VersionsRepo = createVersionsRepo(db)): VersionsService {
   // Configs are immutable once uploaded, so a plain map is enough; it is only ever filled.
   const cache = new Map<number, FunnelConfig>();
+
+  const historyOf = (funnelId: string): HistoryEntry[] =>
+    repo.listHistory(funnelId).map((row) => ({
+      id: row.id,
+      action: row.action,
+      fromVersion: row.from_version,
+      toVersion: row.to_version,
+      at: row.at,
+    }));
 
   const service: VersionsService = {
     upload(raw) {
@@ -80,11 +109,7 @@ export function createVersionsService(db: Db, repo: VersionsRepo = createVersion
       const funnel = repo.getFunnel();
       if (!funnel) throw new HttpError(409, 'nothing_to_rollback', 'There is no previous version to roll back to');
       const funnelId = funnel.funnel_id;
-      const last = repo.latestHistory(funnelId);
-      const target = last?.from_version ?? null;
-      // The target is the `from_version` of the last transition, so a rollback after a rollback
-      // re-activates the version we rolled back from (1 → 3 → 1 → 3 …). Intentional: the button
-      // always undoes the previous transition rather than walking a stack.
+      const target = rollbackTarget(historyOf(funnelId));
       if (target === null) throw new HttpError(409, 'nothing_to_rollback', 'There is no previous version to roll back to');
       if (!repo.getVersion(funnelId, target)) {
         throw new HttpError(409, 'nothing_to_rollback', `Version ${target} is no longer available`);
@@ -99,7 +124,7 @@ export function createVersionsService(db: Db, repo: VersionsRepo = createVersion
 
     list() {
       const funnel = repo.getFunnel();
-      if (!funnel) return { funnelId: null, activeVersion: null, versions: [] };
+      if (!funnel) return { funnelId: null, activeVersion: null, rollbackTarget: null, versions: [] };
       const sessions = repo.countSessionsByVersion(funnel.funnel_id);
       const versions: VersionSummary[] = repo.listVersions(funnel.funnel_id).map((row) => {
         const config = service.getConfig(row.version);
@@ -115,21 +140,17 @@ export function createVersionsService(db: Db, repo: VersionsRepo = createVersion
           sessions: sessions.get(row.version) ?? 0,
         };
       });
-      return { funnelId: funnel.funnel_id, activeVersion: funnel.active_version, versions };
+      return {
+        funnelId: funnel.funnel_id,
+        activeVersion: funnel.active_version,
+        rollbackTarget: rollbackTarget(historyOf(funnel.funnel_id)),
+        versions,
+      };
     },
 
     history() {
       const funnel = repo.getFunnel();
-      if (!funnel) return { history: [] };
-      return {
-        history: repo.listHistory(funnel.funnel_id).map((row) => ({
-          id: row.id,
-          action: row.action,
-          fromVersion: row.from_version,
-          toVersion: row.to_version,
-          at: row.at,
-        })),
-      };
+      return { history: funnel ? historyOf(funnel.funnel_id) : [] };
     },
 
     getConfig(version) {

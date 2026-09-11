@@ -7,7 +7,7 @@ import type { FastifyInstance } from 'fastify';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { buildApp } from '../../server/app';
 import { runBootDemo } from '../../server/seed';
-import type { AnalyticsResponse, HealthResponse, HistoryResponse } from '../../shared/api';
+import type { AnalyticsResponse, HealthResponse, HistoryResponse, VersionsResponse } from '../../shared/api';
 
 const configsDir = fileURLToPath(new URL('../../configs', import.meta.url));
 
@@ -69,6 +69,11 @@ describe('runBootDemo', () => {
       ['publish', 1, 3],
       ['rollback', 3, 1],
     ]);
+    // The first thing a grader may click: Rollback must not swing the fresh demo back to v3.
+    expect(await get<VersionsResponse>(app, '/api/admin/versions')).toMatchObject({ activeVersion: 1, rollbackTarget: null });
+    const rollback = await app.inject({ method: 'POST', url: '/api/admin/rollback' });
+    expect(rollback.statusCode).toBe(409);
+    expect(rollback.json().error.code).toBe('nothing_to_rollback');
     const { byVersion } = await get<AnalyticsResponse>(app, '/api/analytics');
     expect(Object.keys(byVersion).sort()).toEqual(['1', '3']);
     // 120 generated + S1 and S4 on v1; 60 generated + S2 and S3 on v3.

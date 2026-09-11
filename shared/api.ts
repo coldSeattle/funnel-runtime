@@ -94,6 +94,8 @@ export interface VersionSummary {
 export interface VersionsResponse {
   funnelId: string | null;
   activeVersion: number | null;
+  /** The version POST /api/admin/rollback would activate (undo stack over the history); null → 409 */
+  rollbackTarget: number | null;
   versions: VersionSummary[];
 }
 
