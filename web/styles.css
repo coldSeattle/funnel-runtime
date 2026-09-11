@@ -756,28 +756,44 @@ code,
   font-size: 0.88em;
 }
 
+/* No rubber-band overscroll on admin pages: it pulled a bare band of page background above the sticky nav. */
+html:has(.admin) {
+  overscroll-behavior-y: none;
+}
+
 .admin {
   min-height: 100dvh;
   font-size: var(--step-2);
 }
 
+/* Solid, not translucent: nothing scrolling underneath may show through or above it. */
 .admin-nav {
   position: sticky;
   top: 0;
   z-index: 10;
-  background: rgba(255, 253, 248, 0.92);
-  backdrop-filter: blur(8px);
+  margin: 0;
+  background: var(--surface);
   border-bottom: 1px solid var(--line);
 }
 
 .admin-nav-inner {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 20px;
+  gap: 6px 20px;
   max-width: 1160px;
-  height: 58px;
+  min-height: 58px;
   margin: 0 auto;
-  padding: 0 clamp(16px, 4vw, 32px);
+  padding: 8px clamp(16px, 4vw, 32px);
+}
+
+/* Narrow screens: brand and "Open funnel" share the first row, the section links get their own. */
+@media (max-width: 640px) {
+  .admin-nav-links {
+    order: 3;
+    width: 100%;
+    margin-left: -12px;
+  }
 }
 
 .admin-brand {
@@ -1459,8 +1475,13 @@ code,
   text-align: right;
 }
 
-/* Stacked on purpose: side by side, the rate bars squeeze and clip their value labels. */
+/*
+ * Stacked on purpose: side by side, the rate bars squeeze and clip their value labels.
+ * minmax(0, 1fr), not the implicit auto column: an auto track grows to the table's min-content
+ * width and pushed the whole admin page into horizontal scroll on phones.
+ */
 .compare-grid {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 20px;
 }
