@@ -56,7 +56,10 @@ const NOISE_RATES: Record<NoiseKind, number> = {
   invalidEvent: 0.03,
   unknownEvent: 0.02,
 };
-/** With at least this many sessions, session i < NOISE_KINDS.length always gets noise kind i. */
+/**
+ * With at least this many sessions, session i < NOISE_KINDS.length is planned noise kind i; a kind
+ * that cannot apply there (shuffling needs a batch of two events) moves on to the next session.
+ */
 const NOISE_COVERAGE_MIN_SESSIONS = 10;
 
 export interface Counts {
@@ -85,6 +88,9 @@ export interface GeneratorSummary {
   expected: Outcome;
   actualDelta: Outcome;
   ok: boolean;
+  /** Sessions in the analytics delta the generator did not create: someone else's traffic during the run */
+  concurrentSessions: number;
+  /** Sessions per noise kind actually applied (planned shuffles of a session without a two-event batch are not) */
   noise: Record<NoiseKind, number>;
   /** Simulated user behaviour, for the log table */
   behaviour: { overrides: number; backs: number; refreshes: number; droppedOff: number };
@@ -126,10 +132,18 @@ export async function generateTraffic(opts: GenerateOptions): Promise<GeneratorS
   const behaviour = { overrides: 0, backs: 0, refreshes: 0, droppedOff: 0 };
   const delivery = { eventsSent: 0, accepted: 0, duplicates: 0, rejected: 0 };
 
+  // Forced kinds that could not apply are owed to the following sessions until one takes them.
+  const owed = new Set<NoiseKind>();
   for (let i = 0; i < sessions; i++) {
-    const forced = sessions >= NOISE_COVERAGE_MIN_SESSIONS ? NOISE_KINDS[i] : undefined;
+    const forced = new Set(owed);
+    const covered = sessions >= NOISE_COVERAGE_MIN_SESSIONS ? NOISE_KINDS[i] : undefined;
+    if (covered) forced.add(covered);
     const rng = createRng(deriveSeed(seed, i));
     const outcome = await runSession({ call, rng, now, forcedNoise: forced, delivery });
+    for (const kind of forced) {
+      if (outcome.noise.includes(kind)) owed.delete(kind);
+      else owed.add(kind);
+    }
 
     const bucket = (expected.byVariant[outcome.variant] ??= zero());
     for (const counts of [expected, bucket]) {
@@ -151,8 +165,9 @@ export async function generateTraffic(opts: GenerateOptions): Promise<GeneratorS
   const after = await call<AnalyticsResponse>('GET', '/api/analytics', undefined, 200);
   const actualDelta = diff(after, before, Object.keys(expected.byVariant));
   const ok = sameOutcome(expected, actualDelta);
+  const concurrentSessions = Math.max(0, actualDelta.started - expected.started);
 
-  const summary: GeneratorSummary = { sessions, ...delivery, expected, actualDelta, ok, noise, behaviour };
+  const summary: GeneratorSummary = { sessions, ...delivery, expected, actualDelta, ok, concurrentSessions, noise, behaviour };
   for (const line of formatSummary(summary, seed)) log(line);
   return summary;
 }
@@ -161,7 +176,7 @@ interface SessionContext {
   call: ReturnType<typeof caller>;
   rng: Rng;
   now: number;
-  forcedNoise: NoiseKind | undefined;
+  forcedNoise: ReadonlySet<NoiseKind>;
   delivery: { eventsSent: number; accepted: number; duplicates: number; rejected: number };
 }
 
@@ -175,7 +190,7 @@ async function runSession({ call, rng, now, forcedNoise, delivery }: SessionCont
   const wantsBack = rng.chance(BACK_RATE);
   const wantsRefresh = rng.chance(REFRESH_RATE);
   const refreshAtPosition = rng.int(0, 3);
-  const noiseKinds = NOISE_KINDS.filter((kind) => rng.chance(NOISE_RATES[kind]) || kind === forcedNoise);
+  const plannedNoise = NOISE_KINDS.filter((kind) => rng.chance(NOISE_RATES[kind]) || forcedNoise.has(kind));
 
   let clock = now - rng.int(0, MAX_BACKDATE_MS);
   const created = await call<SessionResponse>('POST', '/api/sessions', { query, clientTimestamp: new Date(clock).toISOString() }, 201);
@@ -195,14 +210,7 @@ async function runSession({ call, rng, now, forcedNoise, delivery }: SessionCont
   };
 
   const answers: Answers = {};
-  const view = (step: Step) => {
-    const p = progress(resolved, answers, step.id, config.progress);
-    emit('step_viewed', step.id, {
-      step_type: step.type,
-      visible_step_index: p?.index ?? null,
-      visible_step_count: countableSteps(resolved, answers),
-    });
-  };
+  const view = (step: Step) => emit('step_viewed', step.id, stepViewedProperties(resolved, answers, step));
   const saveState = (currentStepId: string) =>
     call<UpdateStateResponse>('PUT', `${sessionPath}/state`, { answers, currentStepId }, 200);
 
@@ -278,42 +286,54 @@ async function runSession({ call, rng, now, forcedNoise, delivery }: SessionCont
     currentId = next;
   }
 
-  await deliver({ call, rng, delivery }, events, noiseKinds, session.id, tick);
-  return { variant: session.variant, reachedResult, ctaClicked, override, back, refresh, noise: noiseKinds };
+  const noise = await deliver({ call, rng, delivery }, events, plannedNoise, session.id, tick);
+  return { variant: session.variant, reachedResult, ctaClicked, override, back, refresh, noise };
 }
 
 /**
  * Splits a session's events into 1–3 chronological batches and posts them with the session's
- * noise applied: in-batch duplicates, a resent batch, a shuffled batch, a broken or unknown event.
+ * planned noise: a shuffled batch, in-batch duplicates, a broken or unknown event, a resent batch.
+ * Returns the kinds actually applied; shuffling needs a batch with at least two events.
  */
 async function deliver(
   { call, rng, delivery }: Pick<SessionContext, 'call' | 'rng' | 'delivery'>,
   events: IncomingEvent[],
-  noiseKinds: NoiseKind[],
+  planned: NoiseKind[],
   sessionId: string,
   tick: () => string,
-): Promise<void> {
-  const has = (kind: NoiseKind) => noiseKinds.includes(kind);
+): Promise<NoiseKind[]> {
+  const has = (kind: NoiseKind) => planned.includes(kind);
+  const applied = new Set<NoiseKind>();
   const batches = splitIntoBatches(events, rng);
-  const last = batches[batches.length - 1]!;
 
+  // Shuffled first, while every event in the batch is a distinct real one: the new order then
+  // reaches the events table as out-of-order arrival instead of only moving a duplicate around.
+  if (has('shuffled')) {
+    const eligible = batches.flatMap((batch, index) => (batch.length >= 2 ? [index] : []));
+    if (eligible.length > 0) {
+      const index = rng.pick(eligible);
+      batches[index] = reorderBatch(batches[index]!, rng);
+      applied.add('shuffled');
+    }
+  }
   if (has('duplicateInBatch')) {
     const batch = rng.pick(batches);
     const copies = rng.shuffle(batch).slice(0, rng.int(1, Math.min(2, batch.length)));
     batch.push(...copies);
+    applied.add('duplicateInBatch');
   }
+  const last = batches[batches.length - 1]!;
   if (has('invalidEvent')) {
     // Named like a real conversion so that a wrongly accepted event would show up as a mismatch.
     last.push({ event_id: randomUUID(), session_id: sessionId, name: 'cta_clicked', client_timestamp: 'not-a-date', step_id: null });
+    applied.add('invalidEvent');
   }
   if (has('unknownEvent')) {
     last.push({ event_id: randomUUID(), session_id: sessionId, name: 'debug_ping', client_timestamp: tick(), step_id: null });
-  }
-  if (has('shuffled')) {
-    const index = rng.int(0, batches.length - 1);
-    batches[index] = rng.shuffle(batches[index]!);
+    applied.add('unknownEvent');
   }
   const resendIndex = has('resendBatch') ? rng.int(0, batches.length - 1) : -1;
+  if (resendIndex >= 0) applied.add('resendBatch');
 
   for (const [index, batch] of batches.entries()) {
     const times = index === resendIndex ? 2 : 1;
@@ -325,6 +345,17 @@ async function deliver(
       delivery.rejected += res.rejected;
     }
   }
+  return NOISE_KINDS.filter((kind) => applied.has(kind));
+}
+
+/**
+ * A shuffled copy that is never in the original order: a shuffle that lands on the original is
+ * rotated by one instead. Needs at least two distinct items, which a batch of real events has.
+ */
+export function reorderBatch<T>(batch: readonly T[], rng: Rng): T[] {
+  const shuffled = rng.shuffle(batch);
+  if (shuffled.some((item, i) => item !== batch[i])) return shuffled;
+  return [...batch.slice(1), ...batch.slice(0, 1)];
 }
 
 function splitIntoBatches(events: IncomingEvent[], rng: Rng): IncomingEvent[][] {
@@ -376,6 +407,12 @@ function stepOf(resolved: ResolvedFunnel, id: string): Step {
   return step;
 }
 
+/** step_viewed properties as the web client sends them, for the step about to be shown. */
+export function stepViewedProperties(resolved: ResolvedFunnel, answers: Answers, step: Step): Record<string, unknown> {
+  const p = progress(resolved, answers, step.id, resolved.config.progress);
+  return { step_type: step.type, visible_step_index: p?.index ?? null, visible_step_count: countableSteps(resolved, answers) };
+}
+
 /** Same counting rule as progress(): the denominator of "Question 2 of 6". */
 function countableSteps(resolved: ResolvedFunnel, answers: Answers): number {
   const settings = resolved.config.progress;
@@ -424,6 +461,16 @@ function sameOutcome(expected: Outcome, actual: Outcome): boolean {
   return [...variants].every((v) => sameCounts(pickCounts(expected.byVariant[v]), pickCounts(actual.byVariant[v])));
 }
 
+function verdict(s: GeneratorSummary): string {
+  if (s.ok) return 'Result: OK, analytics match the simulation';
+  // Sessions the generator never created can only be someone else's; a bare mismatch would read
+  // like an analytics bug.
+  if (s.concurrentSessions > 0) {
+    return `Result: MISMATCH — concurrent traffic: +${s.concurrentSessions} sessions not created by the generator`;
+  }
+  return 'Result: MISMATCH, analytics differ from the simulation';
+}
+
 function formatSummary(s: GeneratorSummary, seed: number): string[] {
   const triple = (c: Counts | undefined) => {
     const { started, reachedResult, ctaClicked } = pickCounts(c);
@@ -451,7 +498,7 @@ function formatSummary(s: GeneratorSummary, seed: number): string[] {
     ...rows.map(([label, expected, actual]) =>
       row(label, triple(expected), triple(actual), sameCounts(pickCounts(expected), pickCounts(actual)) ? 'OK' : 'MISMATCH'),
     ),
-    s.ok ? 'Result: OK, analytics match the simulation' : 'Result: MISMATCH, analytics differ from the simulation',
+    verdict(s),
     '  note: the server draws each variant, so result/cta totals vary between runs with the same seed',
   ];
 }

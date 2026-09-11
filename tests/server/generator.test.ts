@@ -4,10 +4,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { buildApp } from '../../server/app';
 import { ensureSeed } from '../../server/seed';
 import { resolveVariant, validateAnswer, isInteractive } from '../../shared/engine';
-import type { AnalyticsResponse } from '../../shared/api';
+import type { AnalyticsResponse, IncomingEvent } from '../../shared/api';
 import { createRng, deriveSeed } from '../../scripts/traffic/random';
-import { generateTraffic, pickAnswer, NOISE_KINDS, type GeneratorSummary } from '../../scripts/traffic/generator';
-import { injectTransport } from '../../scripts/traffic/transport';
+import { generateTraffic, pickAnswer, reorderBatch, NOISE_KINDS, type GeneratorSummary } from '../../scripts/traffic/generator';
+import { injectTransport, type HttpMethod, type Transport } from '../../scripts/traffic/transport';
 import { loadConfig, loadRawConfig } from '../helpers/configs';
 
 const configsDir = fileURLToPath(new URL('../../configs', import.meta.url));
@@ -31,6 +31,25 @@ const analyticsOf = async (app: FastifyInstance, query = ''): Promise<AnalyticsR
 const invariantHolds = (body: AnalyticsResponse) =>
   body.steps.reduce((sum, s) => sum + s.exits, 0) + body.exitsBeforeFirstStep + body.totals.reachedResult ===
   body.totals.started;
+
+/**
+ * Sessions whose stored events (rowid = arrival order) run against their client timestamps. The
+ * generator's clock only moves forward, so only a shuffled batch can produce one.
+ */
+function sessionsStoredOutOfOrder(app: FastifyInstance): number {
+  const rows = app.ctx.db.prepare('SELECT session_id, client_timestamp FROM events ORDER BY rowid').all() as {
+    session_id: string;
+    client_timestamp: string;
+  }[];
+  const latest = new Map<string, string>();
+  const outOfOrder = new Set<string>();
+  for (const { session_id: session, client_timestamp: at } of rows) {
+    const seen = latest.get(session);
+    if (seen !== undefined && at < seen) outOfOrder.add(session);
+    else latest.set(session, at);
+  }
+  return outOfOrder.size;
+}
 
 async function freshApp(): Promise<FastifyInstance> {
   const app = buildApp();
@@ -101,6 +120,20 @@ describe('pickAnswer', () => {
   });
 });
 
+describe('reorderBatch', () => {
+  it('always returns the same events in a different order', () => {
+    for (let seed = 0; seed < 300; seed++) {
+      const rng = createRng(seed);
+      for (let length = 2; length <= 6; length++) {
+        const batch = Array.from({ length }, (_, id) => ({ id }));
+        const out = reorderBatch(batch, rng);
+        expect([...out].sort((a, b) => a.id - b.id)).toEqual(batch);
+        expect(out.some((event, i) => event !== batch[i]), `seed ${seed}, length ${length}`).toBe(true);
+      }
+    }
+  });
+});
+
 describe('generateTraffic on v1', () => {
   it('matches the analytics it produces, through noisy delivery', async () => {
     const app = await freshApp();
@@ -115,6 +148,12 @@ describe('generateTraffic on v1', () => {
       expect(summary.duplicates).toBeGreaterThan(0);
       expect(summary.rejected).toBeGreaterThan(0);
       for (const kind of NOISE_KINDS) expect(summary.noise[kind], kind).toBeGreaterThan(0);
+      // Those counters are the generator's own; what the server answered and stored shows the
+      // noise really landed.
+      const { noise } = summary;
+      if (noise.duplicateInBatch + noise.resendBatch > 0) expect(summary.duplicates).toBeGreaterThan(0);
+      expect(summary.rejected).toBeGreaterThanOrEqual(noise.invalidEvent + noise.unknownEvent);
+      expect(sessionsStoredOutOfOrder(app)).toBe(noise.shuffled);
 
       const body = await analyticsOf(app);
       expect(body.totals.started).toBe(30);
@@ -199,7 +238,10 @@ describe('generateTraffic on v1', () => {
         override: r.assignment_source === 'override' ? r.variant : null,
       }));
     expect(plan(second.rows)).toEqual(plan(first.rows));
-    expect(second.summary.noise).toEqual(first.summary.noise);
+    // Every kind applies whenever it is planned, except a shuffle: it needs a batch of two events,
+    // so it depends on how far the session got, and that depends on the server's variant.
+    const pathFree = (noise: GeneratorSummary['noise']) => NOISE_KINDS.filter((k) => k !== 'shuffled').map((k) => [k, noise[k]]);
+    expect(pathFree(second.summary.noise)).toEqual(pathFree(first.summary.noise));
     expect(second.summary.behaviour.overrides).toBe(first.summary.behaviour.overrides);
     expect(second.summary.expected.started).toBe(first.summary.expected.started);
     expect(first.summary.ok && second.summary.ok).toBe(true);
@@ -228,6 +270,62 @@ describe('generateTraffic on v3', () => {
       expect(expanded.n).toBeGreaterThan(0);
       const onOtherVersions = app.ctx.db.prepare('SELECT COUNT(*) AS n FROM sessions WHERE version <> 3').get() as { n: number };
       expect(onOtherVersions.n).toBe(0);
+    } finally {
+      await app.close();
+    }
+  });
+});
+
+describe('generateTraffic verdict', () => {
+  it('names concurrent traffic when analytics grew by sessions the generator did not create', async () => {
+    const app = await freshApp();
+    try {
+      const inner = injectTransport(app);
+      let intruded = false;
+      const transport: Transport = {
+        async request<T>(method: HttpMethod, path: string, body?: unknown) {
+          if (!intruded && method === 'POST' && path === '/api/sessions') {
+            intruded = true;
+            // Someone else's visitor lands while the generator runs.
+            await app.inject({ method: 'POST', url: '/api/sessions', payload: {} });
+          }
+          return inner.request<T>(method, path, body);
+        },
+      };
+      const lines: string[] = [];
+      const summary = await generateTraffic({ transport, sessions: 5, seed: 11, log: (l) => lines.push(l) });
+
+      expect(summary.ok).toBe(false);
+      expect(summary.concurrentSessions).toBe(1);
+      expect(summary.actualDelta.started).toBe(summary.expected.started + 1);
+      expect(lines).toContain('Result: MISMATCH — concurrent traffic: +1 sessions not created by the generator');
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('keeps the plain mismatch verdict when events go missing', async () => {
+    const app = await freshApp();
+    try {
+      const inner = injectTransport(app);
+      // A proxy that eats every result_viewed: the simulation counts results analytics never sees.
+      const transport: Transport = {
+        async request<T>(method: HttpMethod, path: string, body?: unknown) {
+          if (method === 'POST' && path === '/api/events') {
+            const { events } = body as { events: IncomingEvent[] };
+            return inner.request<T>(method, path, { events: events.filter((e) => e.name !== 'result_viewed') });
+          }
+          return inner.request<T>(method, path, body);
+        },
+      };
+      const lines: string[] = [];
+      const summary = await generateTraffic({ transport, sessions: 30, seed: 11, log: (l) => lines.push(l) });
+
+      expect(summary.expected.reachedResult).toBeGreaterThan(0);
+      expect(summary.ok).toBe(false);
+      expect(summary.concurrentSessions).toBe(0);
+      expect(lines).toContain('Result: MISMATCH, analytics differ from the simulation');
+      expect(lines.some((l) => l.includes('concurrent traffic'))).toBe(false);
     } finally {
       await app.close();
     }
