@@ -14,6 +14,9 @@ const DEFAULT_MESSAGES: Record<string, string> = {
   maxSelections: 'Too many options selected.',
 };
 
+// Number() alone also reads "   " as 0, "0x10" as 16 and "1e1" as 10; answers are plain decimals.
+const DECIMAL = /^-?\d+(\.\d+)?$/;
+
 /**
  * Validates a raw answer for a step using the step's validation block.
  * Returns the normalised value (numbers parsed, arrays de-duplicated) on success.
@@ -25,10 +28,11 @@ export function validateAnswer(step: Step, raw: unknown): ValidationResult {
 
   switch (step.type) {
     case 'number': {
-      if (raw === undefined || raw === null || raw === '') {
+      const value = typeof raw === 'string' ? raw.trim() : raw;
+      if (value === undefined || value === null || value === '') {
         return required ? { ok: false, message: msg('required') } : { ok: true, value: undefined };
       }
-      const n = typeof raw === 'number' ? raw : typeof raw === 'string' ? Number(raw.trim()) : NaN;
+      const n = typeof value === 'number' ? value : typeof value === 'string' && DECIMAL.test(value) ? Number(value) : NaN;
       if (!Number.isFinite(n)) return { ok: false, message: msg('invalid') };
       const { min, max, step: increment } = step.input ?? {};
       if (min !== undefined && n < min) return { ok: false, message: msg('min') };

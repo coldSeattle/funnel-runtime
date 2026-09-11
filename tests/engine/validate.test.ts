@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import { validateAnswer } from '../../shared/engine';
+import type { Step } from '../../shared/types';
 import { loadConfig } from '../helpers/configs';
 
 const v1 = loadConfig('funnel-v1.json');
 const step = (id: string) => v1.steps[id]!;
+const optional = (id: string): Step => ({ ...step(id), validation: { ...step(id).validation, required: false } });
 
 describe('validateAnswer', () => {
   it('number: required, min, max, integer step, string input', () => {
@@ -14,6 +16,33 @@ describe('validateAnswer', () => {
     expect(validateAnswer(step('team_size'), 'abc')).toEqual({ ok: false, message: 'Enter a valid value.' });
     expect(validateAnswer(step('team_size'), '12')).toEqual({ ok: true, value: 12 });
     expect(validateAnswer(step('office_days'), 0)).toEqual({ ok: true, value: 0 });
+  });
+
+  it('number: a whitespace-only string is missing, not 0', () => {
+    // min 1: the lenient parse used to answer "The team must have at least one person." here
+    expect(validateAnswer(step('team_size'), '   ')).toEqual({ ok: false, message: 'Enter the team size.' });
+    expect(validateAnswer(step('office_days'), ' \t\n ')).toEqual({ ok: false, message: 'Enter the expected number of office days.' });
+    for (const blank of ['   ', '', undefined, null]) {
+      expect(validateAnswer(optional('office_days'), blank), String(blank)).toEqual({ ok: true, value: undefined });
+    }
+  });
+
+  it('number: only plain decimal text is parsed', () => {
+    const invalid = { ok: false, message: 'Enter a valid value.' };
+    for (const raw of ['0x10', '0b1', '0o7', '1e1', '1E1', '1e+1', '1,5', 'Infinity', '-Infinity', 'NaN', '+5', '.5', '5.', '1 0', '１２']) {
+      expect(validateAnswer(step('team_size'), raw), raw).toEqual(invalid);
+    }
+    for (const raw of [true, {}, [], [12]]) {
+      expect(validateAnswer(step('team_size'), raw), JSON.stringify(raw)).toEqual(invalid);
+    }
+    for (const raw of [Number.POSITIVE_INFINITY, Number.NaN]) {
+      expect(validateAnswer(step('team_size'), raw), String(raw)).toEqual(invalid);
+    }
+    expect(validateAnswer(step('team_size'), ' 12 ')).toEqual({ ok: true, value: 12 });
+    expect(validateAnswer(step('team_size'), 12)).toEqual({ ok: true, value: 12 });
+    expect(validateAnswer(step('office_days'), '0')).toEqual({ ok: true, value: 0 });
+    expect(validateAnswer(step('office_days'), '-1')).toEqual({ ok: false, message: 'Enter a value from 0 to 5.' });
+    expect(validateAnswer(step('team_size'), '2.5')).toEqual({ ok: false, message: 'Enter a whole number.' });
   });
 
   it('single-select: required and option membership', () => {

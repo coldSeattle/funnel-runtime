@@ -232,6 +232,25 @@ describe('sessions', () => {
     expect(err.details).toMatchObject({ key: 'team_size', message: 'For this demo, enter a value up to 200.' });
   });
 
+  it.each([
+    ['a whitespace-only string', '   ', 'Enter the team size.'],
+    ['a hex string', '0x10', 'Enter a valid value.'],
+    ['an exponent string', '1e1', 'Enter a valid value.'],
+  ])('400s on %s for a required number step and stores nothing', async (_label, raw, message) => {
+    const before = (await app.inject({ method: 'GET', url: `/api/sessions/${v1SessionId}` })).json() as SessionResponse;
+    const res = await app.inject({
+      method: 'PUT',
+      url: `/api/sessions/${v1SessionId}/state`,
+      payload: { answers: { work_mode: 'hybrid', team_size: raw }, currentStepId: 'priorities' },
+    });
+    expect(res.statusCode).toBe(400);
+    const err = res.json().error;
+    expect(err.code).toBe('invalid_answer');
+    expect(err.details).toEqual({ key: 'team_size', message });
+    const after = (await app.inject({ method: 'GET', url: `/api/sessions/${v1SessionId}` })).json() as SessionResponse;
+    expect(after.session.answers).toEqual(before.session.answers);
+  });
+
   it('400s on an answer key that is not in the variant', async () => {
     const res = await app.inject({
       method: 'PUT',
