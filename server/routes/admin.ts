@@ -1,5 +1,5 @@
 import type { FastifyPluginCallback } from 'fastify';
-import { HttpError, badRequest } from '../errors';
+import { HttpError } from '../errors';
 import type { HistoryResponse, VersionsResponse } from '../../shared/api';
 
 /** Routes are registered under /api/admin; auth is a no-op unless ADMIN_TOKEN is configured. */
@@ -21,7 +21,10 @@ export const adminRoutes: FastifyPluginCallback = (app, _opts, done) => {
 
   app.post<{ Params: { version: string } }>('/versions/:version/publish', async (req) => {
     const version = Number(req.params.version);
-    if (!Number.isInteger(version)) throw badRequest(`"${req.params.version}" is not a version number`, undefined, 'invalid_version');
+    // A path segment that is not a number cannot name a stored version.
+    if (!Number.isInteger(version)) {
+      throw new HttpError(404, 'version_not_found', `Version ${req.params.version} does not exist`);
+    }
     return app.ctx.services.versions.publish(version);
   });
 

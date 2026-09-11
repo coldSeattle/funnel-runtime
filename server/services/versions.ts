@@ -31,12 +31,6 @@ export function createVersionsService(db: Db, repo: VersionsRepo = createVersion
   // Configs are immutable once uploaded, so a plain map is enough; it is only ever filled.
   const cache = new Map<number, FunnelConfig>();
 
-  const requireFunnelId = (): string => {
-    const funnel = repo.getFunnel();
-    if (!funnel) throw new HttpError(404, 'funnel_not_found', 'No funnel has been uploaded yet');
-    return funnel.funnel_id;
-  };
-
   const service: VersionsService = {
     upload(raw) {
       const parsed = safeParseFunnelConfig(raw);
@@ -69,10 +63,11 @@ export function createVersionsService(db: Db, repo: VersionsRepo = createVersion
     },
 
     publish(version) {
-      const funnelId = requireFunnelId();
-      const row = repo.getVersion(funnelId, version);
-      if (!row) throw new HttpError(404, 'version_not_found', `Version ${version} does not exist`);
-      const previous = repo.getFunnel()?.active_version ?? null;
+      const funnel = repo.getFunnel();
+      const row = funnel ? repo.getVersion(funnel.funnel_id, version) : undefined;
+      if (!funnel || !row) throw new HttpError(404, 'version_not_found', `Version ${version} does not exist`);
+      const funnelId = funnel.funnel_id;
+      const previous = funnel.active_version;
       if (previous === version) throw new HttpError(409, 'already_active', `Version ${version} is already active`);
       const at = new Date().toISOString();
       repo.setActiveVersion(funnelId, version);
@@ -82,7 +77,9 @@ export function createVersionsService(db: Db, repo: VersionsRepo = createVersion
     },
 
     rollback() {
-      const funnelId = requireFunnelId();
+      const funnel = repo.getFunnel();
+      if (!funnel) throw new HttpError(409, 'nothing_to_rollback', 'There is no previous version to roll back to');
+      const funnelId = funnel.funnel_id;
       const last = repo.latestHistory(funnelId);
       const target = last?.from_version ?? null;
       // The target is the `from_version` of the last transition, so a rollback after a rollback

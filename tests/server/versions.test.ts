@@ -218,3 +218,42 @@ describe('admin auth', () => {
     expect(res.statusCode).toBe(200);
   });
 });
+
+describe('admin on an empty database', () => {
+  const app = buildApp();
+  afterAll(async () => {
+    await app.close();
+  });
+
+  it('404s publishing a version before anything is uploaded', async () => {
+    const res = await app.inject({ method: 'POST', url: '/api/admin/versions/1/publish' });
+    expect(res.statusCode).toBe(404);
+    expect(res.json().error.code).toBe('version_not_found');
+  });
+
+  it('404s on a version path segment that is not a number', async () => {
+    const res = await app.inject({ method: 'POST', url: '/api/admin/versions/latest/publish' });
+    expect(res.statusCode).toBe(404);
+    expect(res.json().error.code).toBe('version_not_found');
+  });
+
+  it('409s on rollback before anything is uploaded', async () => {
+    const res = await app.inject({ method: 'POST', url: '/api/admin/rollback' });
+    expect(res.statusCode).toBe(409);
+    expect(res.json().error.code).toBe('nothing_to_rollback');
+  });
+
+  it('returns an empty history', async () => {
+    const res = await app.inject({ method: 'GET', url: '/api/admin/history' });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ history: [] });
+  });
+
+  it('409s on rollback right after the first publish (from_version is null)', async () => {
+    await app.inject({ method: 'POST', url: '/api/admin/versions', payload: loadRawConfig('funnel-v1.json') });
+    await app.inject({ method: 'POST', url: '/api/admin/versions/1/publish' });
+    const res = await app.inject({ method: 'POST', url: '/api/admin/rollback' });
+    expect(res.statusCode).toBe(409);
+    expect(res.json().error.code).toBe('nothing_to_rollback');
+  });
+});
