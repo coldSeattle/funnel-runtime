@@ -69,6 +69,7 @@ export type IngestStatus = 'accepted' | 'duplicate' | 'rejected';
 export interface IngestResult {
   event_id: string | null;
   status: IngestStatus;
+  /** Only on `rejected`: invalid_shape | unknown_session | unknown_event | invalid_properties | unknown_step */
   reason?: string;
 }
 
@@ -99,6 +100,10 @@ export interface VersionsResponse {
   versions: VersionSummary[];
 }
 
+/**
+ * An audit log row. Do not derive the rollback target from it (e.g. from the newest `fromVersion`):
+ * rollback is an undo stack, so read `VersionsResponse.rollbackTarget` instead.
+ */
 export interface HistoryEntry {
   id: number;
   action: 'publish' | 'rollback';
