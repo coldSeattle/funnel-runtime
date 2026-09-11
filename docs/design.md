@@ -66,7 +66,7 @@ progress(resolved, answers, currentStepId, config.progress): { index, count } | 
 // countVisibleOnly + excludeTypes → «Question 2 of 6». null для info/result.
 
 nextStepId(resolved, answers, stepId) / prevStepId(...)   // по видимым шагам
-computeResult(config, resolved, answers): ResultDef
+computeResult(resolved, answers): ResultDef
 // первое правило resultRules, где evaluateCondition(effectiveAnswers) === true,
 // иначе results[defaultResultId]. Результат берётся из resolved.results (с override варианта).
 
@@ -110,7 +110,7 @@ events           (event_id PK, session_id, name, client_timestamp, server_timest
 | Метод и путь | Назначение |
 |---|---|
 | `GET /api/health` | `{ ok: true, activeVersion }` |
-| `POST /api/sessions` | Создать сессию на активной версии. Тело `{ utm?: {source?, medium?, campaign?}, variantOverride?: string, clientTimestamp?: string }`. Вариант: override, если это ключ `experiment.variants`, иначе взвешенный random. Пишет событие `session_started` (event_id генерирует сервер). 201 `{ session, config }`. 503, если нет активной версии. |
+| `POST /api/sessions` | Создать сессию на активной версии. Тело `{ utm?: {source?, medium?, campaign?}, query?: Record<string,string>, variantOverride?: string, clientTimestamp?: string }`. Клиент передаёт все query-параметры страницы; сервер берёт override из `variantOverride`, иначе из `query[config.experiment.overrideQueryParam]`, а UTM — из `utm`, иначе из `query.utm_*`. Override применяется, если это ключ `experiment.variants`, иначе взвешенный random. Пишет событие `session_started` (event_id генерирует сервер). 201 `{ session, config }`. 503, если нет активной версии. |
 | `GET /api/sessions/:id` | `{ session, config }` — конфиг **версии сессии**, даже если она уже не активна. 404 нет, 410 истекла. |
 | `PUT /api/sessions/:id/state` | Тело `{ answers, currentStepId }`. Проверка: шаг есть в последовательности варианта; каждый ответ проходит `validateAnswer`. 200 `{ session }`, 400 с деталями. |
 | `POST /api/sessions/:id/result` | Считает результат движком, сохраняет `result_id`. 200 `{ result }`. |

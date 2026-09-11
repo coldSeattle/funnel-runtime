@@ -26,6 +26,9 @@ export interface SessionDto {
 
 export interface CreateSessionRequest {
   utm?: UtmDto;
+  /** All URL query params of the landing page; the server reads config.experiment.overrideQueryParam from it */
+  query?: Record<string, string>;
+  /** Explicit variant override; takes precedence over `query` */
   variantOverride?: string;
   clientTimestamp?: string;
 }

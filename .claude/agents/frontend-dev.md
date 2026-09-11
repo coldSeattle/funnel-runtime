@@ -13,5 +13,5 @@ You implement the frontend of Funnel Runtime. Before writing code read `CLAUDE.m
   reimplement its logic in components.
 - Plain CSS, no UI libraries. Mobile-first. Keyboard-accessible controls.
 - `npx tsc -p tsconfig.web.json` and `npx vite build` must pass before you report.
-- Do not commit; the lead reviews and commits.
+- Commit on your own branch in your worktree with clear messages; never push, never merge.
 - Report: files created, what each does, deviations from the design doc, open questions.
