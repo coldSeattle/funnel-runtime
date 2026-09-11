@@ -10,6 +10,8 @@ export interface ResultStepProps {
   allowed: Map<string, Set<string>>;
   track: (name: string, options?: TrackOptions) => void;
   onRestart: () => void;
+  /** Called after loading / ready / error swaps the content, so the runner can re-place focus. */
+  onStatusChange?: () => void;
 }
 
 type ResultState =
@@ -17,7 +19,7 @@ type ResultState =
   | { status: 'ready'; result: ResultDef }
   | { status: 'error'; message: string };
 
-export function ResultStep({ step, sessionId, allowed, track, onRestart }: ResultStepProps) {
+export function ResultStep({ step, sessionId, allowed, track, onRestart, onStatusChange }: ResultStepProps) {
   const [state, setState] = useState<ResultState>({ status: 'loading' });
   const [attempt, setAttempt] = useState(0);
   const [expanded, setExpanded] = useState(false);
@@ -41,6 +43,11 @@ export function ResultStep({ step, sessionId, allowed, track, onRestart }: Resul
     // `track` and `step.id` are stable for the lifetime of this screen.
   }, [attempt, sessionId]);
 
+  useEffect(() => {
+    onStatusChange?.();
+    // Only the status matters: each status renders a fresh subtree (see the keys below).
+  }, [state.status]);
+
   function handleCta(result: ResultDef): void {
     const action = result.cta.action;
     track('cta_clicked', { stepId: step.id, properties: { result_id: result.id, action } });
@@ -56,17 +63,21 @@ export function ResultStep({ step, sessionId, allowed, track, onRestart }: Resul
 
   if (state.status === 'loading') {
     return (
-      <div className="step step-result is-loading" aria-busy="true">
+      <div key="loading" className="step step-result is-loading" aria-busy="true">
         <div className="result-spinner" aria-hidden="true" />
-        <h1 className="step-title">{step.content.loadingTitle ?? 'Building your recommendation…'}</h1>
+        <h1 className="step-title" tabIndex={-1}>
+          {step.content.loadingTitle ?? 'Building your recommendation…'}
+        </h1>
       </div>
     );
   }
 
   if (state.status === 'error') {
     return (
-      <div className="step step-result is-error">
-        <h1 className="step-title">{step.content.errorTitle ?? 'We could not build the recommendation'}</h1>
+      <div key="error" className="step step-result is-error">
+        <h1 className="step-title" tabIndex={-1}>
+          {step.content.errorTitle ?? 'We could not build the recommendation'}
+        </h1>
         <p className="step-helper">{state.message}</p>
         <button type="button" className="button button-primary" onClick={() => setAttempt((n) => n + 1)}>
           {step.content.retryLabel ?? 'Try again'}
@@ -80,9 +91,11 @@ export function ResultStep({ step, sessionId, allowed, track, onRestart }: Resul
 
   const { result } = state;
   return (
-    <div className="step step-result">
+    <div key="ready" className="step step-result">
       <p className="eyebrow">Your recommendation</p>
-      <h1 className="step-title">{result.title}</h1>
+      <h1 className="step-title" tabIndex={-1}>
+        {result.title}
+      </h1>
       <p className="result-summary">{result.summary}</p>
 
       <button type="button" className="button button-primary" onClick={() => handleCta(result)}>

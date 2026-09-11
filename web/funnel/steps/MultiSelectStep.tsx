@@ -4,13 +4,15 @@ import { StepHeader } from './StepHeader';
 export interface MultiSelectStepProps {
   step: Step;
   value: string[];
+  /** Ignored by the runner while a save is in flight. */
   onChange: (value: string[]) => void;
-  disabled: boolean;
+  /** Marks the chips unavailable without `disabled`, which would drop keyboard focus. */
+  busy: boolean;
   invalid: boolean;
   errorId: string;
 }
 
-export function MultiSelectStep({ step, value, onChange, disabled, invalid, errorId }: MultiSelectStepProps) {
+export function MultiSelectStep({ step, value, onChange, busy, invalid, errorId }: MultiSelectStepProps) {
   const options = step.input?.options ?? [];
   const max = step.validation?.maxSelections;
 
@@ -35,7 +37,7 @@ export function MultiSelectStep({ step, value, onChange, disabled, invalid, erro
               name={step.input?.name ?? step.id}
               value={option.value}
               checked={value.includes(option.value)}
-              disabled={disabled}
+              aria-disabled={busy || undefined}
               onChange={() => toggle(option.value)}
             />
             <span className="chip-label">{option.label}</span>

@@ -6,12 +6,13 @@ export interface NumberStepProps {
   value: string;
   onChange: (value: string) => void;
   onSubmit: () => void;
-  disabled: boolean;
+  /** A save is in flight: the field locks but stays focusable (a disabled field would drop focus). */
+  busy: boolean;
   invalid: boolean;
   errorId: string;
 }
 
-export function NumberStep({ step, value, onChange, onSubmit, disabled, invalid, errorId }: NumberStepProps) {
+export function NumberStep({ step, value, onChange, onSubmit, busy, invalid, errorId }: NumberStepProps) {
   const input = step.input;
   const inputId = `field-${step.id}`;
   const hintId = `${inputId}-hint`;
@@ -33,7 +34,8 @@ export function NumberStep({ step, value, onChange, onSubmit, disabled, invalid,
           min={input?.min}
           max={input?.max}
           step={input?.step}
-          disabled={disabled}
+          readOnly={busy}
+          aria-disabled={busy || undefined}
           aria-label={step.content.title}
           aria-invalid={invalid || undefined}
           aria-describedby={describedBy || undefined}

@@ -78,6 +78,11 @@ button {
   border-radius: 6px;
 }
 
+/* Headings and the card take focus only programmatically, on a step change; they are not controls. */
+[tabindex='-1']:focus {
+  outline: none;
+}
+
 /* ---------- funnel layout ---------- */
 
 .funnel {
@@ -315,7 +320,9 @@ button {
   outline-offset: 2px;
 }
 
-.option:has(input:disabled) {
+.option:has(input:disabled),
+.option:has(input[aria-disabled='true']),
+.chip:has(input[aria-disabled='true']) {
   opacity: 0.6;
   cursor: default;
 }
@@ -479,15 +486,17 @@ button {
   box-shadow: var(--shadow-sm);
 }
 
-.button-primary:hover:not(:disabled) {
+.button-primary:hover:not(:disabled, [aria-disabled='true']) {
   background: var(--accent-hover);
 }
 
-.button-primary:active:not(:disabled) {
+.button-primary:active:not(:disabled, [aria-disabled='true']) {
   transform: scale(0.99);
 }
 
-.button:disabled {
+/* The funnel uses aria-disabled while saving, so the pressed button keeps keyboard focus. */
+.button:disabled,
+.button[aria-disabled='true'] {
   cursor: default;
   opacity: 0.62;
 }
@@ -510,7 +519,7 @@ button {
   font-weight: 500;
 }
 
-.button-ghost:hover:not(:disabled) {
+.button-ghost:hover:not(:disabled, [aria-disabled='true']) {
   color: var(--accent);
 }
 

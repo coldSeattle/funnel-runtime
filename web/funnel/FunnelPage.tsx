@@ -1,6 +1,6 @@
 // The funnel screen. Nothing is hard-coded: steps, copy, validation and the event whitelist
 // all come from the session's config version, rendered through the shared engine.
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router';
 import type { SessionDto } from '../../shared/api';
 import type { Answers, FunnelConfig, ResolvedFunnel, Step } from '../../shared/types';
@@ -31,6 +31,13 @@ const ERROR_ID = 'step-error';
 
 export function FunnelPage() {
   const { status, session, config, error, retry, restart } = useSession();
+
+  // "Start again" removes the button that had focus; the fresh session's first step takes it instead.
+  const [restarted, setRestarted] = useState(false);
+  const handleRestart = useCallback(() => {
+    setRestarted(true);
+    restart();
+  }, [restart]);
 
   useEffect(() => {
     if (config) document.title = config.title;
@@ -73,13 +80,22 @@ export function FunnelPage() {
       <BootError
         title="This session cannot be displayed"
         message={`Variant "${session.variant}" is not part of config version ${config.version}.`}
-        onRetry={restart}
+        onRetry={handleRestart}
         retryLabel="Start again"
       />
     );
   }
 
-  return <FunnelRunner key={session.id} session={session} config={config} resolved={resolved} onRestart={restart} />;
+  return (
+    <FunnelRunner
+      key={session.id}
+      session={session}
+      config={config}
+      resolved={resolved}
+      onRestart={handleRestart}
+      focusOnMount={restarted}
+    />
+  );
 }
 
 function BootScreen() {
@@ -147,9 +163,11 @@ interface FunnelRunnerProps {
   config: FunnelConfig;
   resolved: ResolvedFunnel;
   onRestart: () => void;
+  /** Move focus to the first step on mount too (after "Start again"), not only on step changes. */
+  focusOnMount: boolean;
 }
 
-function FunnelRunner({ session, config, resolved, onRestart }: FunnelRunnerProps) {
+function FunnelRunner({ session, config, resolved, onRestart, focusOnMount }: FunnelRunnerProps) {
   const [answers, setAnswers] = useState<Answers>(session.answers);
   const [stepId, setStepId] = useState(() => resolveCurrentStep(resolved, session.answers, session.currentStepId).id);
   const [busy, setBusy] = useState(false);
@@ -181,10 +199,31 @@ function FunnelRunner({ session, config, resolved, onRestart }: FunnelRunnerProp
     // Intentionally keyed by the step only: answers change together with the step.
   }, [step.id, tracker]);
 
+  // Focus follows navigation: the card is remounted per step, so whatever had focus is gone.
+  // Landing on the new heading gets it read out and puts keyboard users at the top of the
+  // question. The first mount is skipped (unless restarting) so a page load never steals focus.
+  const mainRef = useRef<HTMLElement>(null);
+  const focusedStepRef = useRef<string | null>(focusOnMount ? null : step.id);
+  const managesFocusRef = useRef(focusOnMount);
+  useEffect(() => {
+    if (focusedStepRef.current === step.id) return; // first mount, or StrictMode's second run
+    focusedStepRef.current = step.id;
+    managesFocusRef.current = true;
+    focusStepHeading(mainRef.current);
+  }, [step.id]);
+
+  /** The result screen swaps loading → ready / error inside one step; re-place focus it dropped. */
+  function rescueFocus(): void {
+    if (!managesFocusRef.current) return;
+    const active = document.activeElement;
+    if (active === null || active === document.body) focusStepHeading(mainRef.current);
+  }
+
   const position = progress(resolved, answers, step.id);
   const canGoBack = step.type !== 'result' && prevStepId(resolved, answers, step.id) !== null;
 
   function setDraftValue(value: DraftValue): void {
+    if (busy) return; // inputs stay focusable while saving, so edits are ignored here instead
     setDraftState({ stepId: step.id, value, fieldError: null, failure: draft.failure });
   }
 
@@ -268,7 +307,7 @@ function FunnelRunner({ session, config, resolved, onRestart }: FunnelRunnerProp
             step={step}
             value={typeof draft.value === 'string' ? draft.value : ''}
             onChange={setDraftValue}
-            disabled={busy}
+            busy={busy}
             invalid={invalid}
             errorId={ERROR_ID}
           />
@@ -279,7 +318,7 @@ function FunnelRunner({ session, config, resolved, onRestart }: FunnelRunnerProp
             step={step}
             value={Array.isArray(draft.value) ? draft.value : []}
             onChange={setDraftValue}
-            disabled={busy}
+            busy={busy}
             invalid={invalid}
             errorId={ERROR_ID}
           />
@@ -291,7 +330,7 @@ function FunnelRunner({ session, config, resolved, onRestart }: FunnelRunnerProp
             value={typeof draft.value === 'string' ? draft.value : ''}
             onChange={setDraftValue}
             onSubmit={() => void submit()}
-            disabled={busy}
+            busy={busy}
             invalid={invalid}
             errorId={ERROR_ID}
           />
@@ -304,6 +343,7 @@ function FunnelRunner({ session, config, resolved, onRestart }: FunnelRunnerProp
             allowed={allowed}
             track={(name, options) => tracker.track(name, options)}
             onRestart={onRestart}
+            onStatusChange={rescueFocus}
           />
         );
       default:
@@ -319,7 +359,7 @@ function FunnelRunner({ session, config, resolved, onRestart }: FunnelRunnerProp
           {position ? <ProgressBar index={position.index} count={position.count} /> : null}
         </header>
 
-        <main className="card" key={step.id}>
+        <main className="card" key={step.id} ref={mainRef} tabIndex={-1} aria-busy={busy || undefined}>
           {renderStep()}
           {draft.fieldError ? (
             <p className="field-error" id={ERROR_ID} role="alert">
@@ -343,17 +383,24 @@ function FunnelRunner({ session, config, resolved, onRestart }: FunnelRunnerProp
           ) : null}
 
           {step.type === 'result' ? null : (
+            // aria-disabled, not disabled: a disabled button drops keyboard focus mid-save.
+            // submit() and goBack() already ignore clicks while busy.
             <div className="action-row">
               <button
                 type="button"
                 className={`button button-primary${busy ? ' is-busy' : ''}`}
-                disabled={busy}
+                aria-disabled={busy || undefined}
                 onClick={() => void submit()}
               >
                 {step.content.primaryActionLabel ?? 'Continue'}
               </button>
               {canGoBack ? (
-                <button type="button" className="button button-ghost" disabled={busy} onClick={() => void goBack()}>
+                <button
+                  type="button"
+                  className="button button-ghost"
+                  aria-disabled={busy || undefined}
+                  onClick={() => void goBack()}
+                >
                   Back
                 </button>
               ) : null}
@@ -376,6 +423,15 @@ function freshDraft(step: Step, answers: Answers): StepDraft {
   if (step.type === 'multi-select') value = Array.isArray(stored) ? [...stored] : [];
   else if (stored !== undefined && !Array.isArray(stored)) value = String(stored);
   return { stepId: step.id, value, fieldError: null, failure: null };
+}
+
+/** Focuses the step's h1 (tabIndex -1), or the card itself when the step has no title. */
+function focusStepHeading(container: HTMLElement | null): void {
+  if (!container) return;
+  const target = container.querySelector<HTMLElement>('h1[tabindex]') ?? container;
+  target.focus({ preventScroll: true });
+  // A new question starts at the top; plain focus() could park the heading under the sticky bar.
+  if (window.scrollY > 0) window.scrollTo({ top: 0 });
 }
 
 function countableSteps(resolved: ResolvedFunnel, answers: Answers, settings: FunnelConfig['progress']): number {

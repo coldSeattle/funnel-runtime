@@ -4,14 +4,16 @@ import { StepHeader } from './StepHeader';
 export interface SingleSelectStepProps {
   step: Step;
   value: string;
+  /** Ignored by the runner while a save is in flight. */
   onChange: (value: string) => void;
-  disabled: boolean;
+  /** Marks the options unavailable without `disabled`, which would drop keyboard focus. */
+  busy: boolean;
   invalid: boolean;
   errorId: string;
 }
 
 /** Radio inputs behind option cards: arrow-key navigation and focus rings come for free. */
-export function SingleSelectStep({ step, value, onChange, disabled, invalid, errorId }: SingleSelectStepProps) {
+export function SingleSelectStep({ step, value, onChange, busy, invalid, errorId }: SingleSelectStepProps) {
   const options = step.input?.options ?? [];
   return (
     <div className="step step-single">
@@ -30,7 +32,7 @@ export function SingleSelectStep({ step, value, onChange, disabled, invalid, err
               name={step.input?.name ?? step.id}
               value={option.value}
               checked={value === option.value}
-              disabled={disabled}
+              aria-disabled={busy || undefined}
               onChange={() => onChange(option.value)}
             />
             <span className="option-label">{option.label}</span>
