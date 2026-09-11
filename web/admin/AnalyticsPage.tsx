@@ -2,10 +2,11 @@
 // Filters live in the URL so a slice can be shared as a link.
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { useSearchParams } from 'react-router';
-import type { AnalyticsFilters, AnalyticsResponse, StepRow, Totals } from '../../shared/api';
+import type { AnalyticsFilters, AnalyticsResponse, StepRow } from '../../shared/api';
 import { ApiRequestError, getAnalytics, toApiError } from '../api';
 import { AdminLayout, TokenPrompt } from './AdminLayout';
 import { dashboardView, staleNote, type DashboardView } from './dashboardView';
+import { groupVariants, type Experiment, type VariantRow } from './variantGroups';
 import {
   compareProportions,
   MIN_SUCCESSES,
@@ -243,6 +244,10 @@ function Dashboard({ data, view, onExcludeOverrides }: DashboardProps) {
     (worst, row) => (row.exits > 0 && (worst === null || row.exits > worst.exits) ? row : worst),
     null,
   );
+  const variants = groupVariants(data);
+  const versionRows: VariantRow[] = Object.entries(data.byVersion)
+    .sort(([a], [b]) => a.localeCompare(b, undefined, { numeric: true }))
+    .map(([version, rowTotals]) => ({ key: version, label: `v${version}`, totals: rowTotals }));
 
   return (
     // Refetches keep the previous numbers on screen, dimmed, instead of flashing a loader; after a
@@ -335,15 +340,17 @@ function Dashboard({ data, view, onExcludeOverrides }: DashboardProps) {
       </section>
 
       <div className="compare-grid">
-        <CompareTable id="by-variant" title="By variant" rows={data.byVariant} label={(key) => `Variant ${key}`}>
-          <AbComparison
-            byVariant={data.byVariant}
+        <CompareTable id="by-variant" title="By variant" rows={variants.rows}>
+          {variants.perVersion ? (
+            <p className="table-note">Each version runs its own experiment — variants are compared within a version.</p>
+          ) : null}
+          <AbComparisons
+            experiments={variants.experiments}
             overridesExcluded={data.filters.excludeOverrides === true}
-            pooledVersions={data.filters.version === undefined && data.options.versions.length > 1}
             onExcludeOverrides={onExcludeOverrides}
           />
         </CompareTable>
-        <CompareTable id="by-version" title="By version" rows={data.byVersion} label={(key) => `v${key}`} />
+        <CompareTable id="by-version" title="By version" rows={versionRows} />
       </div>
     </div>
   );
@@ -378,19 +385,17 @@ function RateBar({ rate }: { rate: number | null }) {
 interface CompareTableProps {
   id: string;
   title: string;
-  rows: Record<string, Totals>;
-  label: (key: string) => string;
+  rows: VariantRow[];
   children?: ReactNode;
 }
 
-function CompareTable({ id, title, rows, label, children }: CompareTableProps) {
-  const entries = Object.entries(rows).sort(([a], [b]) => a.localeCompare(b, undefined, { numeric: true }));
+function CompareTable({ id, title, rows, children }: CompareTableProps) {
   return (
     <section aria-labelledby={id}>
       <h2 className="section-title" id={id}>
         {title}
       </h2>
-      {entries.length === 0 ? (
+      {rows.length === 0 ? (
         <div className="panel muted">No sessions in this slice.</div>
       ) : (
         <div className="table-wrap">
@@ -414,9 +419,9 @@ function CompareTable({ id, title, rows, label, children }: CompareTableProps) {
               </tr>
             </thead>
             <tbody>
-              {entries.map(([key, totals]) => (
+              {rows.map(({ key, label, totals }) => (
                 <tr key={key}>
-                  <td className="strong nowrap">{label(key)}</td>
+                  <td className="strong nowrap">{label}</td>
                   <td className="num">{formatCount(totals.started)}</td>
                   <td className="num">{formatCount(totals.reachedResult)}</td>
                   <td className="num">{formatCount(totals.ctaClicked)}</td>
@@ -443,21 +448,48 @@ interface AbMetricSpec {
   comparison: ProportionComparison;
 }
 
-interface AbComparisonProps {
-  byVariant: Record<string, Totals>;
+interface AbComparisonsProps {
+  experiments: Experiment[];
   overridesExcluded: boolean;
-  pooledVersions: boolean;
   onExcludeOverrides: () => void;
 }
 
-/** B vs A with a 95 % interval per metric (math in ./stats.ts), instead of eyeballing raw rates. */
-function AbComparison({ byVariant, overridesExcluded, pooledVersions, onExcludeOverrides }: AbComparisonProps) {
-  const a = byVariant.A;
-  const b = byVariant.B;
-  if (!a || !b) {
-    return <p className="table-note">The A/B significance check appears when both variant A and variant B are in the selection.</p>;
+/** One significance block per experiment (a version with both arms); the reading advice is shared. */
+function AbComparisons({ experiments, overridesExcluded, onExcludeOverrides }: AbComparisonsProps) {
+  if (experiments.length === 0) {
+    return (
+      <p className="table-note">
+        The A/B significance check appears when variant A and variant B of the same version are both in the selection.
+      </p>
+    );
   }
+  return (
+    <>
+      <p className="ab-explainer">
+        Decide on primary conversion; CTR is secondary.{' '}
+        {overridesExcluded ? (
+          'Override sessions are excluded, so both arms are randomly assigned.'
+        ) : (
+          <>
+            Override sessions are included —{' '}
+            <button type="button" className="inline-link" onClick={onExcludeOverrides}>
+              exclude them
+            </button>{' '}
+            for a clean read.
+          </>
+        )}
+      </p>
+      {experiments.map((experiment) => (
+        <AbComparison key={experiment.version} experiment={experiment} />
+      ))}
+    </>
+  );
+}
 
+/** B vs A with a 95 % interval per metric (math in ./stats.ts), instead of eyeballing raw rates. */
+function AbComparison({ experiment }: { experiment: Experiment }) {
+  const { version, a, b } = experiment;
+  const titleId = `ab-title-v${version}`;
   const metrics: AbMetricSpec[] = [
     {
       id: 'primary',
@@ -479,30 +511,13 @@ function AbComparison({ byVariant, overridesExcluded, pooledVersions, onExcludeO
   ];
 
   return (
-    <section className="ab" aria-labelledby="ab-title">
+    <section className="ab" aria-labelledby={titleId}>
       <div className="ab-header">
-        <h3 className="ab-title" id="ab-title">
-          B vs A
+        <h3 className="ab-title" id={titleId}>
+          v{version} · B vs A
         </h3>
         <span className="muted small">Difference B − A, 95% confidence interval (Newcombe–Wilson)</span>
       </div>
-      <p className="ab-explainer">
-        Decide on primary conversion; CTR is secondary.{' '}
-        {overridesExcluded ? (
-          'Override sessions are excluded, so both arms are randomly assigned.'
-        ) : (
-          <>
-            Override sessions are included —{' '}
-            <button type="button" className="inline-link" onClick={onExcludeOverrides}>
-              exclude them
-            </button>{' '}
-            for a clean read.
-          </>
-        )}
-      </p>
-      {pooledVersions ? (
-        <p className="ab-explainer muted">Arms are pooled across versions; pick one version to read a single experiment.</p>
-      ) : null}
       <div className="ab-grid">
         {metrics.map((metric) => (
           <AbMetric key={metric.id} metric={metric} />
