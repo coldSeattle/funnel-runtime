@@ -1,6 +1,7 @@
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { buildApp } from './app';
+import { ensureSeed } from './seed';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const port = Number(process.env.PORT ?? 3000);
@@ -15,6 +16,9 @@ const app = buildApp({
 });
 
 try {
+  // An empty database (fresh disk on the free host) gets v1 published before the first request.
+  // The traffic generator hook is added by the generator task.
+  await ensureSeed(app, { configsDir: join(process.cwd(), 'configs') });
   await app.listen({ port, host: '0.0.0.0' });
 } catch (err) {
   app.log.error(err);
