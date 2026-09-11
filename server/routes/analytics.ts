@@ -18,8 +18,9 @@ export const analyticsRoutes: FastifyPluginCallback = (app, _opts, done) => {
 
     const version = param(req.query, 'version');
     if (version !== undefined) {
-      const parsed = Number(version);
-      if (!Number.isInteger(parsed)) throw badRequest(`"${version}" is not a version number`, { version }, 'invalid_filter');
+      // Number() alone would also take "0x1", "1e0" and "+1"; a version is plain decimal digits.
+      const parsed = /^\d+$/.test(version) ? Number(version) : NaN;
+      if (!Number.isSafeInteger(parsed)) throw badRequest(`"${version}" is not a version number`, { version }, 'invalid_filter');
       filters.version = parsed;
     }
     const variant = param(req.query, 'variant');

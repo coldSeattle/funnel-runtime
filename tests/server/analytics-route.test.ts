@@ -220,4 +220,13 @@ describe('GET /api/analytics', () => {
     expect(res.statusCode).toBe(400);
     expect(res.json().error.code).toBe('invalid_filter');
   });
+
+  it.each(['0x1', '1e0', '-1', '1.5', '+1', '1.0', '99999999999999999999'])(
+    'rejects version=%s: only plain decimal digits are a version number',
+    async (version) => {
+      const res = await app.inject({ method: 'GET', url: `/api/analytics?version=${encodeURIComponent(version)}` });
+      expect(res.statusCode).toBe(400);
+      expect(res.json().error.code).toBe('invalid_filter');
+    },
+  );
 });
