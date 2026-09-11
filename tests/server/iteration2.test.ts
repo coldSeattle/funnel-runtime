@@ -1,10 +1,12 @@
 import { fileURLToPath } from 'node:url';
 import type { FastifyInstance } from 'fastify';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { buildApp } from '../../server/app';
 import { ensureSeed } from '../../server/seed';
-import { runIteration2Check, type Iteration2Options } from '../../scripts/iteration2-check';
-import { injectTransport } from '../../scripts/traffic/transport';
+import type { IncomingEvent, SessionResponse } from '../../shared/api';
+import { runIteration2Check, type Iteration2Check, type Iteration2Options } from '../../scripts/iteration2-check';
+import { createRng } from '../../scripts/traffic/random';
+import { injectTransport, type HttpMethod, type Transport } from '../../scripts/traffic/transport';
 
 const configsDir = fileURLToPath(new URL('../../configs', import.meta.url));
 
@@ -113,6 +115,70 @@ describe('iteration 2 acceptance check', () => {
     const { checks, lines } = await run({ now: () => at });
     expect(checks.every((c) => c.at === '2026-09-12T08:15:30.000Z')).toBe(true);
     expect(lines.filter((l) => l.startsWith('✓ 08:15:30 '))).toHaveLength(checks.length);
+  });
+});
+
+describe('iteration 2 acceptance check: synthetic traffic failure detail', () => {
+  let app: FastifyInstance;
+  beforeEach(async () => {
+    app = await freshApp();
+    // Pinned server variant draws, so the generator's sessions reach the result the same way every run.
+    vi.spyOn(Math, 'random').mockImplementation(createRng(20260911).next);
+  });
+  afterEach(async () => {
+    vi.restoreAllMocks();
+    await app.close();
+  });
+
+  /**
+   * On the generator's first session someone else's visitor lands; `dropResult` also eats the first
+   * result_viewed of a generator session. The QA sessions S1–S4 pass through untouched.
+   */
+  const trafficCheck = async (dropResult: boolean): Promise<Iteration2Check> => {
+    const inner = injectTransport(app);
+    const generated = new Set<string>();
+    let intruded = false;
+    let dropped = !dropResult;
+    const transport: Transport = {
+      async request<T>(method: HttpMethod, path: string, body?: unknown) {
+        const campaign = (body as { query?: Record<string, string> } | undefined)?.query?.utm_campaign;
+        const fromGenerator = method === 'POST' && path === '/api/sessions' && campaign !== 'iteration2_check';
+        if (fromGenerator && !intruded) {
+          intruded = true;
+          await app.inject({ method: 'POST', url: '/api/sessions', payload: {} });
+        }
+        if (!dropped && method === 'POST' && path === '/api/events') {
+          const events = (body as { events: IncomingEvent[] }).events.filter((e) => {
+            if (!dropped && e.name === 'result_viewed' && generated.has(e.session_id)) {
+              dropped = true;
+              return false;
+            }
+            return true;
+          });
+          return inner.request<T>(method, path, { events });
+        }
+        const res = await inner.request<T>(method, path, body);
+        if (fromGenerator) generated.add((res.body as SessionResponse).session.id);
+        return res;
+      },
+    };
+    const { checks } = await runIteration2Check({ transport, configsDir, traffic: 20, seed: 3 });
+    expect(dropped).toBe(true);
+    return checks.find((c) => c.step === 'synthetic v3 traffic')!;
+  };
+
+  it('names concurrent traffic when it explains the whole difference', async () => {
+    const check = await trafficCheck(false);
+    expect(check.ok).toBe(false);
+    expect(check.detail).toBe('analytics moved by 1 sessions the generator did not create (concurrent traffic)');
+  });
+
+  it('points at the table when a result is also lost, instead of blaming the extra session', async () => {
+    const check = await trafficCheck(true);
+    expect(check.ok).toBe(false);
+    expect(check.detail).toMatch(/^the analytics delta differs from the simulation \(table above\)/);
+    expect(check.detail).toContain('1 sessions the generator did not create cannot explain counts below it');
+    expect(check.detail).not.toContain('(concurrent traffic)');
   });
 });
 

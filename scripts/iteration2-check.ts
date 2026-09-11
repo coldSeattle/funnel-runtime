@@ -419,11 +419,15 @@ export async function runIteration2Check(opts: Iteration2Options): Promise<Itera
     await check('synthetic v3 traffic', async () => {
       const before = (await analytics(`?version=${NEW_VERSION}`)).totals.started;
       const summary = await generateTraffic({ transport: opts.transport, sessions: traffic, seed, log: (line) => log(`    ${line}`) });
+      // Other visitors only add counts, so they are named as the cause only when nothing fell short.
       assert(
         summary.ok,
-        summary.concurrentSessions > 0
-          ? `analytics moved by ${summary.concurrentSessions} sessions the generator did not create`
-          : 'the analytics delta differs from the simulation (table above)',
+        summary.concurrentOnly
+          ? `analytics moved by ${summary.concurrentSessions} sessions the generator did not create (concurrent traffic)`
+          : 'the analytics delta differs from the simulation (table above)' +
+              (summary.concurrentSessions > 0
+                ? `; the ${summary.concurrentSessions} sessions the generator did not create cannot explain counts below it`
+                : ''),
       );
       const onV3 = (await analytics(`?version=${NEW_VERSION}`)).totals.started - before;
       assert(onV3 === traffic, `${onV3} of ${traffic} generated sessions landed on v3`);

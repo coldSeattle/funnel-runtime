@@ -90,6 +90,8 @@ export interface GeneratorSummary {
   ok: boolean;
   /** Sessions in the analytics delta the generator did not create: someone else's traffic during the run */
   concurrentSessions: number;
+  /** The mismatch is fully explained by those sessions: no count anywhere fell below the simulation */
+  concurrentOnly: boolean;
   /** Sessions per noise kind actually applied (planned shuffles of a session without a two-event batch are not) */
   noise: Record<NoiseKind, number>;
   /** Simulated user behaviour, for the log table */
@@ -166,8 +168,19 @@ export async function generateTraffic(opts: GenerateOptions): Promise<GeneratorS
   const actualDelta = diff(after, before, Object.keys(expected.byVariant));
   const ok = sameOutcome(expected, actualDelta);
   const concurrentSessions = Math.max(0, actualDelta.started - expected.started);
+  const concurrentOnly = !ok && explainedByConcurrentTraffic(expected, actualDelta);
 
-  const summary: GeneratorSummary = { sessions, ...delivery, expected, actualDelta, ok, concurrentSessions, noise, behaviour };
+  const summary: GeneratorSummary = {
+    sessions,
+    ...delivery,
+    expected,
+    actualDelta,
+    ok,
+    concurrentSessions,
+    concurrentOnly,
+    noise,
+    behaviour,
+  };
   for (const line of formatSummary(summary, seed)) log(line);
   return summary;
 }
@@ -461,14 +474,32 @@ function sameOutcome(expected: Outcome, actual: Outcome): boolean {
   return [...variants].every((v) => sameCounts(pickCounts(expected.byVariant[v]), pickCounts(actual.byVariant[v])));
 }
 
+/**
+ * Whether other visitors alone can account for the difference: they only ever add sessions, results
+ * and clicks, so started must have grown and no count, in total or in any variant, may be below the
+ * simulation. A single count below it is a real loss, whatever else moved.
+ */
+export function explainedByConcurrentTraffic(expected: Outcome, actual: Outcome): boolean {
+  if (actual.started <= expected.started) return false;
+  const atLeast = (a: Counts, e: Counts) =>
+    a.started >= e.started && a.reachedResult >= e.reachedResult && a.ctaClicked >= e.ctaClicked;
+  if (!atLeast(actual, expected)) return false;
+  const variants = new Set([...Object.keys(expected.byVariant), ...Object.keys(actual.byVariant)]);
+  return [...variants].every((v) => atLeast(pickCounts(actual.byVariant[v]), pickCounts(expected.byVariant[v])));
+}
+
 function verdict(s: GeneratorSummary): string {
   if (s.ok) return 'Result: OK, analytics match the simulation';
   // Sessions the generator never created can only be someone else's; a bare mismatch would read
-  // like an analytics bug.
-  if (s.concurrentSessions > 0) {
+  // like an analytics bug. Blamed only when they explain the whole difference.
+  if (s.concurrentOnly) {
     return `Result: MISMATCH — concurrent traffic: +${s.concurrentSessions} sessions not created by the generator`;
   }
-  return 'Result: MISMATCH, analytics differ from the simulation';
+  const extra =
+    s.concurrentSessions > 0
+      ? ` (also +${s.concurrentSessions} sessions not created by the generator, which cannot explain counts below the simulation)`
+      : '';
+  return `Result: MISMATCH, analytics differ from the simulation${extra}`;
 }
 
 function formatSummary(s: GeneratorSummary, seed: number): string[] {

@@ -6,7 +6,15 @@ import { ensureSeed } from '../../server/seed';
 import { resolveVariant, validateAnswer, isInteractive } from '../../shared/engine';
 import type { AnalyticsResponse, IncomingEvent } from '../../shared/api';
 import { createRng, deriveSeed } from '../../scripts/traffic/random';
-import { generateTraffic, pickAnswer, reorderBatch, NOISE_KINDS, type GeneratorSummary } from '../../scripts/traffic/generator';
+import {
+  explainedByConcurrentTraffic,
+  generateTraffic,
+  pickAnswer,
+  reorderBatch,
+  NOISE_KINDS,
+  type GeneratorSummary,
+  type Outcome,
+} from '../../scripts/traffic/generator';
 import { injectTransport, type HttpMethod, type Transport } from '../../scripts/traffic/transport';
 import { loadConfig, loadRawConfig } from '../helpers/configs';
 
@@ -276,29 +284,74 @@ describe('generateTraffic on v3', () => {
   });
 });
 
+/**
+ * A proxy in front of the app. `intrude`: someone else's visitor lands on the first session the
+ * generator creates. `dropResults`: how many result_viewed events it eats, so the simulation counts
+ * results analytics never sees.
+ */
+function proxy(app: FastifyInstance, { intrude = false, dropResults = 0 }: { intrude?: boolean; dropResults?: number }): Transport {
+  const inner = injectTransport(app);
+  let intruded = !intrude;
+  let toDrop = dropResults;
+  return {
+    async request<T>(method: HttpMethod, path: string, body?: unknown) {
+      if (!intruded && method === 'POST' && path === '/api/sessions') {
+        intruded = true;
+        await app.inject({ method: 'POST', url: '/api/sessions', payload: {} });
+      }
+      if (toDrop > 0 && method === 'POST' && path === '/api/events') {
+        const events = (body as { events: IncomingEvent[] }).events.filter((e) => {
+          if (toDrop > 0 && e.name === 'result_viewed') {
+            toDrop--;
+            return false;
+          }
+          return true;
+        });
+        return inner.request<T>(method, path, { events });
+      }
+      return inner.request<T>(method, path, body);
+    },
+  };
+}
+
 describe('generateTraffic verdict', () => {
   it('names concurrent traffic when analytics grew by sessions the generator did not create', async () => {
     const app = await freshApp();
     try {
-      const inner = injectTransport(app);
-      let intruded = false;
-      const transport: Transport = {
-        async request<T>(method: HttpMethod, path: string, body?: unknown) {
-          if (!intruded && method === 'POST' && path === '/api/sessions') {
-            intruded = true;
-            // Someone else's visitor lands while the generator runs.
-            await app.inject({ method: 'POST', url: '/api/sessions', payload: {} });
-          }
-          return inner.request<T>(method, path, body);
-        },
-      };
       const lines: string[] = [];
-      const summary = await generateTraffic({ transport, sessions: 5, seed: 11, log: (l) => lines.push(l) });
+      const summary = await generateTraffic({ transport: proxy(app, { intrude: true }), sessions: 5, seed: 11, log: (l) => lines.push(l) });
 
       expect(summary.ok).toBe(false);
       expect(summary.concurrentSessions).toBe(1);
+      expect(summary.concurrentOnly).toBe(true);
       expect(summary.actualDelta.started).toBe(summary.expected.started + 1);
       expect(lines).toContain('Result: MISMATCH — concurrent traffic: +1 sessions not created by the generator');
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('does not blame concurrent traffic for a lost result that happened alongside it', async () => {
+    const app = await freshApp();
+    try {
+      const lines: string[] = [];
+      const summary = await generateTraffic({
+        transport: proxy(app, { intrude: true, dropResults: 1 }),
+        sessions: 30,
+        seed: 11,
+        log: (l) => lines.push(l),
+      });
+
+      // The premise: one extra session and one result short.
+      expect(summary.actualDelta.started).toBe(summary.expected.started + 1);
+      expect(summary.actualDelta.reachedResult).toBe(summary.expected.reachedResult - 1);
+      expect(summary.ok).toBe(false);
+      expect(summary.concurrentSessions).toBe(1);
+      expect(summary.concurrentOnly).toBe(false);
+      const verdictLine = lines.find((l) => l.startsWith('Result: '));
+      expect(verdictLine).toMatch(/^Result: MISMATCH, analytics differ from the simulation/);
+      expect(verdictLine).toContain('+1 sessions not created by the generator');
+      expect(lines.some((l) => l.includes('concurrent traffic:'))).toBe(false);
     } finally {
       await app.close();
     }
@@ -307,27 +360,47 @@ describe('generateTraffic verdict', () => {
   it('keeps the plain mismatch verdict when events go missing', async () => {
     const app = await freshApp();
     try {
-      const inner = injectTransport(app);
-      // A proxy that eats every result_viewed: the simulation counts results analytics never sees.
-      const transport: Transport = {
-        async request<T>(method: HttpMethod, path: string, body?: unknown) {
-          if (method === 'POST' && path === '/api/events') {
-            const { events } = body as { events: IncomingEvent[] };
-            return inner.request<T>(method, path, { events: events.filter((e) => e.name !== 'result_viewed') });
-          }
-          return inner.request<T>(method, path, body);
-        },
-      };
       const lines: string[] = [];
-      const summary = await generateTraffic({ transport, sessions: 30, seed: 11, log: (l) => lines.push(l) });
+      const summary = await generateTraffic({
+        transport: proxy(app, { dropResults: Number.POSITIVE_INFINITY }),
+        sessions: 30,
+        seed: 11,
+        log: (l) => lines.push(l),
+      });
 
       expect(summary.expected.reachedResult).toBeGreaterThan(0);
       expect(summary.ok).toBe(false);
       expect(summary.concurrentSessions).toBe(0);
+      expect(summary.concurrentOnly).toBe(false);
       expect(lines).toContain('Result: MISMATCH, analytics differ from the simulation');
       expect(lines.some((l) => l.includes('concurrent traffic'))).toBe(false);
     } finally {
       await app.close();
     }
+  });
+});
+
+describe('explainedByConcurrentTraffic', () => {
+  const outcome = (total: [number, number, number], byVariant: Record<string, [number, number, number]>): Outcome => {
+    const counts = ([started, reachedResult, ctaClicked]: [number, number, number]) => ({ started, reachedResult, ctaClicked });
+    return { ...counts(total), byVariant: Object.fromEntries(Object.entries(byVariant).map(([v, c]) => [v, counts(c)])) };
+  };
+  const expected = outcome([10, 5, 2], { A: [6, 3, 1], B: [4, 2, 1] });
+
+  it('accepts extra sessions, results and clicks, including in a variant the generator never saw', () => {
+    expect(explainedByConcurrentTraffic(expected, outcome([11, 6, 3], { A: [7, 4, 2], B: [4, 2, 1] }))).toBe(true);
+    expect(explainedByConcurrentTraffic(expected, outcome([11, 5, 2], { A: [6, 3, 1], B: [4, 2, 1], C: [1, 0, 0] }))).toBe(true);
+  });
+
+  it('refuses when started did not grow: nobody else came', () => {
+    expect(explainedByConcurrentTraffic(expected, outcome([10, 6, 2], { A: [6, 4, 1], B: [4, 2, 1] }))).toBe(false);
+  });
+
+  it('refuses when any count is below the simulation, even if the totals hide it', () => {
+    expect(explainedByConcurrentTraffic(expected, outcome([11, 4, 2], { A: [7, 2, 1], B: [4, 2, 1] }))).toBe(false);
+    // An outside result in B masks a lost result in A at the total level.
+    expect(explainedByConcurrentTraffic(expected, outcome([11, 5, 2], { A: [6, 2, 1], B: [5, 3, 1] }))).toBe(false);
+    // A variant the simulation expected that analytics did not report at all.
+    expect(explainedByConcurrentTraffic(expected, outcome([11, 5, 2], { A: [11, 5, 2] }))).toBe(false);
   });
 });
