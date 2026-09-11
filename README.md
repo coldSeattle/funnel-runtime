@@ -5,7 +5,10 @@
 версии работает A/B-эксперимент, все действия уходят в собственный endpoint событий,
 дашборд считает метрики по уникальным сессиям.
 
-- **Публичный URL:** _(будет добавлен после деплоя)_
+- **Публичный URL:** https://funnel-runtime.onrender.com (воронка) ·
+  [/admin](https://funnel-runtime.onrender.com/admin) (версии) ·
+  [/admin/analytics](https://funnel-runtime.onrender.com/admin/analytics) (дашборд).
+  Free-тариф Render: после простоя первый запрос просыпается до ~50 с.
 - **Репозиторий:** https://github.com/coldSeattle/funnel-runtime
 - Дизайн системы: [`docs/design.md`](docs/design.md) · план: [`docs/plan.md`](docs/plan.md) ·
   процесс работы с AI-агентами: [`docs/process.md`](docs/process.md) · задание: [`docs/assignment.pdf`](docs/assignment.pdf)
